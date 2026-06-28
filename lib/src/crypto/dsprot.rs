@@ -512,6 +512,7 @@ trait DsProtAlgo {
                 size: pool_offset + fn_offset,
                 encryption: EncryptionType::None,
                 constant_pool: EncodedConstantPool::ObfuscatedFunctionTable {
+                    length: (table_end_address - pool_address) / 8,
                     with_garbage: garbage_address.is_some(),
                     with_overwrite: overwrite_address.is_some(),
                 },
@@ -730,7 +731,7 @@ trait DsProtAlgo {
         for &EncryptedFunction { address: func_address, size: func_size, encryption: _, constant_pool } in
             obfuscated_function_tables
         {
-            let EncodedConstantPool::ObfuscatedFunctionTable { with_garbage, with_overwrite } = constant_pool else {
+            let EncodedConstantPool::ObfuscatedFunctionTable { length, with_garbage, with_overwrite } = constant_pool else {
                 continue;
             };
 
@@ -750,11 +751,14 @@ trait DsProtAlgo {
             };
 
             let mut pool_iter = pool_words.iter_mut();
-            while let Some(first) = pool_iter.next()
-                && let Some(second) = pool_iter.next()
-            {
-                if *first == 0 {
-                    // End of list
+            for _ in 0..length {
+                let Some(first) = pool_iter.next() else {
+                    break;
+                };
+                let Some(second) = pool_iter.next() else {
+                    break;
+                };
+                if *first == 0 && *second == 0 {
                     break;
                 }
 
@@ -1599,6 +1603,8 @@ pub enum EncodedConstantPool {
     None,
     /// Encodes an array of (function address, function size).
     ObfuscatedFunctionTable {
+        /// The number of (function address, function size) entries.
+        length: u32,
         /// If true, a pointer to DS Protect's garbage data was appended to the end of the constant pool.
         with_garbage: bool,
         /// If true, a pointer to this decoder function was appended to the end of the constant pool.
