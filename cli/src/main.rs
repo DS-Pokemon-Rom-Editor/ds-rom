@@ -54,6 +54,9 @@ pub fn print_hex(data: &[u8], raw: bool, base: u32) -> Result<()> {
             for byte in chunk {
                 print!(" {byte:02x}");
             }
+            for _ in chunk.len()..16 {
+                print!("   ");
+            }
             print!("  ");
             for &byte in chunk {
                 let ch = char::from(byte);
