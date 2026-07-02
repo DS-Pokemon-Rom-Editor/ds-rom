@@ -57,6 +57,15 @@ impl Rc4 {
         result
     }
 
+    /// Encrypts the next byte in an unencrypted payload.
+    pub fn encrypt_byte(&mut self, b: u8) -> u8 {
+        let result = self.byte() ^ b;
+        if let Some(x) = self.x.as_mut() {
+            *x = result;
+        }
+        result
+    }
+
     /// Updates the x value using a callback receiving the current value and returning the new value.
     pub fn update_x<F: FnOnce(u8) -> u8>(&mut self, f: F) {
         if let Some(x) = self.x.as_mut() {

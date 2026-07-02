@@ -10,20 +10,21 @@ use super::{
 use crate::{
     compress::lz77::{Lz77, Lz77DecompressError},
     crypto::{
-        dsprot::{DecryptOptions, DsProtDecryptDetails, DsProtError, DsProtInfo},
+        dsprot::{DecryptOptions, DsProtDecryptResult, DsProtError, DsProtInfo, DsProtState},
         hmac_sha1::HmacSha1,
     },
     rom::Arm9HmacSha1KeyError,
 };
 
 /// An overlay module for ARM9/ARM7.
-#[derive(Clone)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct Overlay<'a> {
     originally_compressed: bool,
     originally_signed: bool,
     info: OverlayInfo,
     signature: Option<HmacSha1Signature>,
     data: Cow<'a, [u8]>,
+    dsprot_state: DsProtState,
 }
 
 const LZ77: Lz77 = Lz77 {};
@@ -36,6 +37,8 @@ pub struct OverlayOptions {
     pub originally_signed: bool,
     /// Overlay info.
     pub info: OverlayInfo,
+    /// DS Protect decryption info, used for re-encrypting DS Protect functions.
+    pub dsprot: Option<DsProtDecryptResult>,
 }
 
 /// Errors related to [`Overlay`].
@@ -100,10 +103,12 @@ pub enum OverlayDsProtError {
 impl<'a> Overlay<'a> {
     /// Creates a new [`Overlay`] from plain data.
     pub fn new<T: Into<Cow<'a, [u8]>>>(data: T, options: OverlayOptions) -> Result<Self, OverlayError> {
-        let OverlayOptions { originally_compressed, originally_signed, info } = options;
+        let OverlayOptions { originally_compressed, originally_signed, info, dsprot } = options;
         let data = data.into();
 
-        Ok(Self { originally_compressed, originally_signed, info, signature: None, data })
+        let dsprot_state = if let Some(dsprot) = dsprot { DsProtState::Encrypted(dsprot) } else { DsProtState::None };
+
+        Ok(Self { originally_compressed, originally_signed, info, signature: None, data, dsprot_state })
     }
 
     /// Parses an ARM9 [`Overlay`] from a ROM.
@@ -123,6 +128,7 @@ impl<'a> Overlay<'a> {
             info: OverlayInfo::new(overlay),
             signature: None,
             data: Cow::Borrowed(data),
+            dsprot_state: DsProtState::None,
         };
 
         if overlay.flags.is_signed() {
@@ -165,6 +171,7 @@ impl<'a> Overlay<'a> {
             info: OverlayInfo::new(overlay),
             signature: None,
             data: Cow::Borrowed(data),
+            dsprot_state: DsProtState::None,
         };
 
         Ok(overlay)
@@ -331,26 +338,57 @@ impl<'a> Overlay<'a> {
         if self.is_compressed() { overlay_ds_prot_error::CompressedSnafu.fail() } else { Ok(DsProtInfo::detect(&self.data)) }
     }
 
-    /// Decrypts all functions in this overlay that were encrypted by DS Protect.
+    /// Decrypts all functions in this overlay that were encrypted by DS Protect. Does nothing if
+    /// [`Overlay::dsprot_state`] is [`DsProtState::Unencrypted`].
     ///
     /// # Errors
     ///
     /// This function will return an error if [`DsProtInfo::decrypt`] fails.
-    pub fn decrypt_dsprot(&mut self, options: &DecryptOptions) -> Result<Option<DsProtDecryptDetails>, OverlayDsProtError> {
+    pub fn decrypt_dsprot(&mut self, options: &DecryptOptions) -> Result<Option<&DsProtDecryptResult>, OverlayDsProtError> {
         let Some(dsprot_info) = self.dsprot_info()? else {
             // DS Protect is not used
             return Ok(None);
         };
 
         let base_address = self.base_address();
-        let details = dsprot_info.decrypt(self.data.to_mut(), base_address, options)?;
+        let result = dsprot_info.decrypt(self.data.to_mut(), base_address, options)?;
+        self.dsprot_state = DsProtState::Unencrypted(result);
+        let DsProtState::Unencrypted(result) = &self.dsprot_state else { unreachable!() };
+        Ok(Some(result))
+    }
 
-        Ok(Some(details))
+    /// Encrypts DS Protect functions in this overlay. This can only be done if
+    /// [`Overlay::dsprot_state`] is [`DsProtState::Unencrypted`].
+    ///
+    /// # Errors
+    ///
+    /// This function will return an error if [`DsProtInfo::decrypt`] fails.
+    pub fn encrypt_dsprot(&mut self) -> Result<(), OverlayDsProtError> {
+        let dsprot_state = std::mem::replace(&mut self.dsprot_state, DsProtState::None);
+        let DsProtState::Unencrypted(dsprot_result) = dsprot_state else {
+            self.dsprot_state = dsprot_state; // revert replace
+            return Ok(());
+        };
+
+        let base_address = self.base_address();
+        dsprot_result.encrypt(self.data.to_mut(), base_address)?;
+        self.dsprot_state = DsProtState::Encrypted(dsprot_result);
+
+        Ok(())
+    }
+
+    /// Returns the [`DsProtState`] of this overlay.
+    pub fn dsprot_state(&self) -> &DsProtState {
+        &self.dsprot_state
+    }
+
+    pub(crate) fn set_dsprot_state(&mut self, dsprot_state: DsProtState) {
+        self.dsprot_state = dsprot_state;
     }
 }
 
 /// Info of an [`Overlay`], similar to an entry in the overlay table.
-#[derive(Serialize, Deserialize, Clone)]
+#[derive(Serialize, Deserialize, Clone, PartialEq, Eq)]
 pub struct OverlayInfo {
     /// Overlay ID.
     pub id: u32,

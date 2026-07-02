@@ -15,22 +15,23 @@ use crate::{
     crc::CRC_16_MODBUS,
     crypto::{
         blowfish::{Blowfish, BlowfishError, BlowfishKey, BlowfishLevel},
-        dsprot::{DecryptOptions, DsProtDecryptDetails, DsProtError, DsProtInfo},
+        dsprot::{DecryptOptions, DsProtDecryptResult, DsProtError, DsProtInfo, DsProtState},
     },
     rom::LibraryEntry,
 };
 
 /// ARM9 program.
-#[derive(Clone)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct Arm9<'a> {
     data: Cow<'a, [u8]>,
     offsets: Arm9Offsets,
     originally_compressed: bool,
     originally_encrypted: bool,
+    dsprot_state: DsProtState,
 }
 
 /// Offsets in the ARM9 program.
-#[derive(Serialize, Deserialize, Clone, Copy)]
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq)]
 pub struct Arm9Offsets {
     /// Base address.
     pub base_address: u32,
@@ -196,22 +197,33 @@ pub struct Arm9WithTcmsOptions {
     pub originally_compressed: bool,
     /// Whether the program was encrypted originally.
     pub originally_encrypted: bool,
+    /// DS Protect decryption info, used for re-encrypting DS Protect functions.
+    pub dsprot: Option<DsProtDecryptResult>,
 }
 
 impl<'a> Arm9<'a> {
     /// Creates a new ARM9 program from raw data.
     pub fn new<T: Into<Cow<'a, [u8]>>>(data: T, offsets: Arm9Offsets) -> Result<Self, RawBuildInfoError> {
-        let mut arm9 = Arm9 { data: data.into(), offsets, originally_compressed: false, originally_encrypted: false };
+        let mut arm9 = Arm9 {
+            data: data.into(),
+            offsets,
+            originally_compressed: false,
+            originally_encrypted: false,
+            dsprot_state: DsProtState::None,
+        };
         arm9.originally_compressed = arm9.is_compressed()?;
         arm9.originally_encrypted = arm9.is_encrypted();
         Ok(arm9)
     }
 
+    /// Deprecated, use [`Arm9::with_autoloads`] instead.
+    ///
     /// Creates a new ARM9 program with raw data and two autoloads (ITCM and DTCM).
     ///
     /// # Errors
     ///
     /// See [`Self::build_info_mut`].
+    #[deprecated(note = "use Arm9::with_autoloads instead")]
     pub fn with_two_tcms(
         mut data: Vec<u8>,
         itcm: Autoload,
@@ -228,8 +240,9 @@ impl<'a> Arm9<'a> {
         data.extend(bytemuck::bytes_of(&autoload_infos));
         let autoload_infos_end = data.len() as u32 + offsets.base_address;
 
-        let Arm9WithTcmsOptions { originally_compressed, originally_encrypted } = options;
-        let mut arm9 = Self { data: data.into(), offsets, originally_compressed, originally_encrypted };
+        let Arm9WithTcmsOptions { originally_compressed, originally_encrypted, dsprot } = options;
+        let dsprot_state = if let Some(dsprot) = dsprot { DsProtState::Encrypted(dsprot) } else { DsProtState::None };
+        let mut arm9 = Self { data: data.into(), offsets, originally_compressed, originally_encrypted, dsprot_state };
 
         let build_info = arm9.build_info_mut()?;
         build_info.autoload_blocks = autoload_blocks;
@@ -262,8 +275,9 @@ impl<'a> Arm9<'a> {
         }
         let autoload_infos_end = data.len() as u32 + offsets.base_address;
 
-        let Arm9WithTcmsOptions { originally_compressed, originally_encrypted } = options;
-        let mut arm9 = Self { data: data.into(), offsets, originally_compressed, originally_encrypted };
+        let Arm9WithTcmsOptions { originally_compressed, originally_encrypted, dsprot } = options;
+        let dsprot_state = if let Some(dsprot) = dsprot { DsProtState::Encrypted(dsprot) } else { DsProtState::None };
+        let mut arm9 = Self { data: data.into(), offsets, originally_compressed, originally_encrypted, dsprot_state };
 
         let build_info = arm9.build_info_mut()?;
         build_info.autoload_blocks = autoload_blocks;
@@ -764,21 +778,51 @@ impl<'a> Arm9<'a> {
         }
     }
 
-    /// Decrypts all functions in this ARM9 program that were encrypted by DS Protect.
+    /// Decrypts all functions in this ARM9 program that were encrypted by DS Protect. Does nothing
+    /// if [`Arm9::dsprot_state`] is [`DsProtState::Unencrypted`].
     ///
     /// # Errors
     ///
     /// This function will return an error if [`DsProtInfo::decrypt`] fails.
-    pub fn decrypt_dsprot(&mut self, options: &DecryptOptions) -> Result<Option<DsProtDecryptDetails>, Arm9DsProtInfoError> {
+    pub fn decrypt_dsprot(&mut self, options: &DecryptOptions) -> Result<Option<&DsProtDecryptResult>, Arm9DsProtInfoError> {
         let Some(dsprot_info) = self.dsprot_info()? else {
             // DS Protect is not used
             return Ok(None);
         };
 
         let base_address = self.base_address();
-        let details = dsprot_info.decrypt(self.data.to_mut(), base_address, options)?;
+        let result = dsprot_info.decrypt(self.data.to_mut(), base_address, options)?;
+        self.dsprot_state = DsProtState::Unencrypted(result);
+        let DsProtState::Unencrypted(result) = &self.dsprot_state else { unreachable!() };
+        Ok(Some(result))
+    }
 
-        Ok(Some(details))
+    /// Encrypts DS Protect functions in this ARM9 program. This can only be done if
+    /// [`Arm9::dsprot_state`] is [`DsProtState::Unencrypted`].
+    ///
+    /// # Errors
+    ///
+    /// This function will return an error if [`DsProtInfo::decrypt`] fails.
+    pub fn encrypt_dsprot(&mut self) -> Result<(), Arm9DsProtInfoError> {
+        let dsprot_state = std::mem::replace(&mut self.dsprot_state, DsProtState::None);
+        let DsProtState::Unencrypted(dsprot_result) = dsprot_state else {
+            return Ok(());
+        };
+
+        let base_address = self.base_address();
+        dsprot_result.encrypt(self.data.to_mut(), base_address)?;
+        self.dsprot_state = DsProtState::Encrypted(dsprot_result);
+
+        Ok(())
+    }
+
+    /// Returns the [`DsProtState`] of this ARM9 program.
+    pub fn dsprot_state(&self) -> &DsProtState {
+        &self.dsprot_state
+    }
+
+    pub(crate) fn set_dsprot_state(&mut self, dsprot_state: DsProtState) {
+        self.dsprot_state = dsprot_state;
     }
 }
 

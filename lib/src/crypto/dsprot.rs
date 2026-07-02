@@ -10,135 +10,228 @@ use snafu::Snafu;
 use crate::crypto::rc4::Rc4;
 
 struct DsProtVersion {
-    number: &'static str,
+    number: DsProtVersionNumber,
     detect_signature: [u32; 6],
     algo: &'static dyn DsProtAlgo,
 }
 
+/// Represents all known versions of DS Protect
+#[derive(Serialize, Deserialize, Clone, Copy, derive_more::Display, PartialEq, Eq, Debug)]
+pub enum DsProtVersionNumber {
+    /// 1.00 or 1.02
+    #[serde(rename = "1.00")]
+    #[display("1.00")]
+    V1_00,
+    /// 1.05
+    #[serde(rename = "1.05")]
+    #[display("1.05")]
+    V1_05,
+    /// 1.06
+    #[serde(rename = "1.06")]
+    #[display("1.06")]
+    V1_06,
+    /// 1.08
+    #[serde(rename = "1.08")]
+    #[display("1.08")]
+    V1_08,
+    /// 1.10
+    #[serde(rename = "1.10")]
+    #[display("1.10")]
+    V1_10,
+    /// 1.20
+    #[serde(rename = "1.20")]
+    #[display("1.20")]
+    V1_20,
+    /// 1.22
+    #[serde(rename = "1.22")]
+    #[display("1.22")]
+    V1_22,
+    /// 1.23
+    #[serde(rename = "1.23")]
+    #[display("1.23")]
+    V1_23,
+    /// 1.23z
+    #[serde(rename = "1.23z")]
+    #[display("1.23z")]
+    V1_23Z,
+    /// 1.25
+    #[serde(rename = "1.25")]
+    #[display("1.25")]
+    V1_25,
+    /// 1.26
+    #[serde(rename = "1.26")]
+    #[display("1.26")]
+    V1_26,
+    /// 1.27
+    #[serde(rename = "1.27")]
+    #[display("1.27")]
+    V1_27,
+    /// 1.28
+    #[serde(rename = "1.28")]
+    #[display("1.28")]
+    V1_28,
+    /// 2.00
+    #[serde(rename = "2.00")]
+    #[display("2.00")]
+    V2_00,
+    /// 2.00 Instant
+    #[serde(rename = "2.00 Instant")]
+    #[display("2.00 Instant")]
+    V2_00Instant,
+    /// 2.01
+    #[serde(rename = "2.01")]
+    #[display("2.01")]
+    V2_01,
+    /// 2.01 Instant
+    #[serde(rename = "2.01 Instant")]
+    #[display("2.01 Instant")]
+    V2_01Instant,
+    /// 2.03
+    #[serde(rename = "2.03")]
+    #[display("2.03")]
+    V2_03,
+    /// 2.03 Instant
+    #[serde(rename = "2.03 Instant")]
+    #[display("2.03 Instant")]
+    V2_03Instant,
+    /// 2.05
+    #[serde(rename = "2.05")]
+    #[display("2.05")]
+    V2_05,
+    /// 2.05 Instant
+    #[serde(rename = "2.05 Instant")]
+    #[display("2.05 Instant")]
+    V2_05Instant,
+}
+
 const DSPROT_VERSIONS: &[DsProtVersion] = &[
     DsProtVersion {
-        number: "1.00",
+        number: DsProtVersionNumber::V1_00,
         detect_signature: [0xe3527270, 0xbafe77fc, 0xe59e0989, 0xe1c2f9af, 0xea018a51, 0xeb004ae2],
         algo: &DsProtAlgoV1 { encrypted_range_start_signature: [0xe92d0001, 0xe1a0000f, 0xe2800010, 0xe8bd0001, 0xea000000] },
     },
     DsProtVersion {
-        number: "1.05",
+        number: DsProtVersionNumber::V1_05,
         detect_signature: [0xbafe0f18, 0xe59caf7a, 0xe2861884, 0xe1c5da54, 0xea018a6b, 0xeb0070c2],
         algo: &DsProtAlgoV1 { encrypted_range_start_signature: [0xe92d0001, 0xe3a0000c, 0xe080000f, 0xe8bd0001, 0xea000000] },
     },
     DsProtVersion {
-        number: "1.06",
+        number: DsProtVersionNumber::V1_06,
         detect_signature: [0xbafe9b10, 0xe59cfa77, 0xe2862a71, 0xe1c54e3d, 0xea01879d, 0xeb005fdf],
         algo: &DsProtAlgoV1 { encrypted_range_start_signature: [0xe92d000f, 0xe3a0100c, 0xe081000f, 0xe8bd000f, 0xea000000] },
     },
     DsProtVersion {
-        number: "1.08",
+        number: DsProtVersionNumber::V1_08,
         detect_signature: [0xbafe4040, 0xe59c2300, 0xe2852226, 0xe1c5cbe8, 0xea01612f, 0xeb004979],
         algo: &DsProtAlgoV1 { encrypted_range_start_signature: [0xe92d00ff, 0xe1a0000f, 0xe2800010, 0xe8bd00ff, 0xea000000] },
     },
     DsProtVersion {
-        number: "1.10",
+        number: DsProtVersionNumber::V1_10,
         detect_signature: [0xbafe29a2, 0xe59cc95b, 0xe285d70a, 0xe1c5442c, 0xea01fd7e, 0xeb001cfc],
         algo: &DsProtAlgoV1 { encrypted_range_start_signature: [0xe92d00ff, 0xe3a00006, 0xe08f0080, 0xe8bd00ff, 0xea000000] },
     },
     DsProtVersion {
-        number: "1.20",
+        number: DsProtVersionNumber::V1_20,
         detect_signature: [0xe3580f00, 0xbafe7df8, 0xe284dff9, 0xe1c2059d, 0xea014de4, 0xeb002f0c],
         algo: &DsProtAlgoV1 { encrypted_range_start_signature: [0xe92d03ff, 0xe3a00006, 0xe08f0080, 0xe8bd03ff, 0xea000000] },
     },
     DsProtVersion {
-        number: "1.22",
+        number: DsProtVersionNumber::V1_22,
         detect_signature: [0xe3581567, 0xbafee339, 0xe284dad2, 0xe1c27622, 0xea017231, 0xeb0037ee],
         algo: &DsProtAlgoV1 { encrypted_range_start_signature: [0xe92d03ff, 0xe3a00003, 0xe08f0100, 0xe8bd03ff, 0xea000000] },
     },
     DsProtVersion {
-        number: "1.23",
+        number: DsProtVersionNumber::V1_23,
         detect_signature: [0xebaa0113, 0xe4064ec7, 0xef013596, 0xe5212f83, 0xe7ee335b, 0xe83b197c],
         algo: &DsProtAlgoV2 { reference_offset: 0x1300, unkeyed_encryption_xor: 0xf0566556 },
     },
     DsProtVersion {
-        number: "1.23z",
+        number: DsProtVersionNumber::V1_23Z,
         detect_signature: [0xebaa0114, 0x40064eb7, 0x5f013696, 0xe5211f83, 0xe7ef335b, 0xe84b197c],
         algo: &DsProtAlgoV2 { reference_offset: 0x1400, unkeyed_encryption_xor: 0xd0685665 },
     },
     DsProtVersion {
-        number: "1.25",
+        number: DsProtVersionNumber::V1_25,
         detect_signature: [0xebb6df66, 0xe42f6211, 0xef56b5aa, 0xe5b903fd, 0xe7d29154, 0xe859697c],
         algo: &DsProtAlgoV3 { reference_offset: 0x1500, unkeyed_encryption_xor: 0xf0556655 },
     },
     DsProtVersion {
-        number: "1.26",
+        number: DsProtVersionNumber::V1_26,
         detect_signature: [0xeb8fbc31, 0xe4ec10cf, 0xef73e592, 0xe59a0b7e, 0xe78cb309, 0xe87f3ed1],
         algo: &DsProtAlgoV4 { reference_offset: 0x1200, unkeyed_encryption_xor: 0xf03852cb },
     },
     DsProtVersion {
-        number: "1.27",
+        number: DsProtVersionNumber::V1_27,
         detect_signature: [0xe8dffe17, 0xe43df0de, 0x2ae8335c, 0x0ac09826, 0xe7a838dc, 0xe891a6fc],
         algo: &DsProtAlgoV4 { reference_offset: 0x1600, unkeyed_encryption_xor: 0xf0618c46 },
     },
     DsProtVersion {
-        number: "1.28",
+        number: DsProtVersionNumber::V1_28,
         detect_signature: [0xe2ed720b, 0xef69d1b1, 0x2ec32a41, 0x1aa3e665, 0xe9e1c153, 0xe49e8d9c],
         algo: &DsProtAlgoV4 { reference_offset: 0x1000, unkeyed_encryption_xor: 0xf0b9a2ea },
     },
     DsProtVersion {
-        number: "2.00",
+        number: DsProtVersionNumber::V2_00,
         detect_signature: [0x0819ff33, 0xe4a1ef1c, 0x5a85a2b3, 0xea0d2a0f, 0xe0d6bd78, 0xe29d9377],
         algo: &DsProtAlgoV5 { reference_offset: 0x1700, unkeyed_encryption_xor: 0xa5ca49b3 },
     },
     DsProtVersion {
-        number: "2.00 Instant",
+        number: DsProtVersionNumber::V2_00Instant,
         detect_signature: [0x0849ea8b, 0xe33b6243, 0x53b2d501, 0xe6847168, 0xebd886d7, 0xee3c09c0],
         algo: &DsProtAlgoV5 { reference_offset: 0x1700, unkeyed_encryption_xor: 0xa5ca49b3 },
     },
     DsProtVersion {
-        number: "2.01",
+        number: DsProtVersionNumber::V2_01,
         detect_signature: [0x08d5310e, 0xe41bdb46, 0x5a3d9627, 0xeaf8fc79, 0xe016c9e7, 0xe2eb8130],
         algo: &DsProtAlgoV5 { reference_offset: 0x2100, unkeyed_encryption_xor: 0x7fec9df1 },
     },
     DsProtVersion {
-        number: "2.01 Instant",
+        number: DsProtVersionNumber::V2_01Instant,
         detect_signature: [0x08637dd1, 0xe3618cb3, 0x5356f520, 0xe6b110ca, 0xeb4c1e5c, 0xeed91028],
         algo: &DsProtAlgoV5 { reference_offset: 0x2100, unkeyed_encryption_xor: 0x7fec9df1 },
     },
     DsProtVersion {
-        number: "2.03",
+        number: DsProtVersionNumber::V2_03,
         detect_signature: [0x08b76046, 0xe4177f2f, 0x5ab21c99, 0xea2af4b1, 0xe0fe885a, 0xe202fc9e],
         algo: &DsProtAlgoV6 {
             reference_offset: 0x3200,
             unkeyed_encryption_xor: 0x0976afcc,
             precalculated_seed_key: 0xfa8fd0ea,
+            decrypt_opcode: |curr, prev| curr ^ prev,
             encrypt_opcode: |curr, prev| curr ^ prev,
         },
     },
     DsProtVersion {
-        number: "2.03 Instant",
+        number: DsProtVersionNumber::V2_03Instant,
         detect_signature: [0x08b76046, 0xe4177f2f, 0x5ab21c99, 0xea2af4b1, 0xe0fe885a, 0xe2029efc],
         algo: &DsProtAlgoV6 {
             reference_offset: 0x3200,
             unkeyed_encryption_xor: 0x0976afcc,
             precalculated_seed_key: 0xfa8fd0ea,
+            decrypt_opcode: |curr, prev| curr ^ prev,
             encrypt_opcode: |curr, prev| curr ^ prev,
         },
     },
     DsProtVersion {
-        number: "2.05",
+        number: DsProtVersionNumber::V2_05,
         detect_signature: [0x08a27510, 0xe47ab3c3, 0x5a289302, 0xeaa6cac8, 0xe00d75d5, 0xe2d2fe01],
         algo: &DsProtAlgoV6 {
             reference_offset: 0x2200,
             unkeyed_encryption_xor: 0x0a471abb,
             precalculated_seed_key: 0x89ede4ea,
-            encrypt_opcode: |curr, prev| curr.wrapping_sub(prev),
+            decrypt_opcode: |curr, prev| curr.wrapping_sub(prev),
+            encrypt_opcode: |curr, prev| curr.wrapping_add(prev),
         },
     },
     DsProtVersion {
-        number: "2.05 Instant",
+        number: DsProtVersionNumber::V2_05Instant,
         detect_signature: [0x08a27510, 0xe47ab3c3, 0x5a289302, 0xeaa6cac8, 0xe00d75d5, 0xe2d2fe00],
         algo: &DsProtAlgoV6 {
             reference_offset: 0x2200,
             unkeyed_encryption_xor: 0x0a471abb,
             precalculated_seed_key: 0x89ede4ea,
-            encrypt_opcode: |curr, prev| curr.wrapping_sub(prev),
+            decrypt_opcode: |curr, prev| curr.wrapping_sub(prev),
+            encrypt_opcode: |curr, prev| curr.wrapping_add(prev),
         },
     },
 ];
@@ -252,12 +345,12 @@ impl DsProtInfo {
     ///
     /// This function will return an error if it accesses data out of bounds. This happens if the
     /// wrong data is passed, or due to a bug in this function.
-    pub fn decrypt(
+    pub(crate) fn decrypt(
         &self,
         data: &mut [u8],
         base_address: u32,
         options: &DecryptOptions,
-    ) -> Result<DsProtDecryptDetails, DsProtError> {
+    ) -> Result<DsProtDecryptResult, DsProtError> {
         let end_address = base_address + data.len() as u32;
 
         // Make 32-bit chunks
@@ -319,8 +412,13 @@ impl Display for DisplayDsProtInfo<'_> {
 struct AlgoDecryptOptions {
     base_address: u32,
     end_address: u32,
-    version: &'static str,
+    version: DsProtVersionNumber,
     decode_literals: bool,
+}
+
+struct AlgoEncryptOptions {
+    base_address: u32,
+    end_address: u32,
 }
 
 const DECRYPTION_WRAPPER_SIGNATURE_1: [u32; 3] = [0xe92d00f0, 0xe92d000f, 0xe8bd00f0];
@@ -335,15 +433,15 @@ trait DsProtAlgo {
     fn unkeyed_encrypt_instruction(&self, ins: u32, xor: u32) -> (u32, u32);
     fn unkeyed_decrypt_instruction(&self, ins: u32, xor: u32) -> (u32, u32);
     fn decrypt_instruction(&self, rc4: &mut Rc4, ins: u32, prev_ins: u32) -> u32;
+    fn encrypt_instruction(&self, rc4: &mut Rc4, ins: u32, prev_ins: u32) -> u32;
     fn precalculated_seed_key(&self) -> Option<u32>;
     fn init_rc4(&self, seed_key: u32, func_size: u32) -> Rc4;
 
-    // The below default implementations are for version 1.23 onwards (DsProtAlgoV2, V3 and V4), as
-    // the de/encryption procedure for those versions are essentially identical aside from the bit
+    // The below default implementations are for version 1.23 onwards (DsProtAlgoV2 and up), as
     // the de/encryption procedure for those versions are essentially identical aside from the bit
     // twiddling.
 
-    fn decrypt(&self, words: &mut [u32], options: &AlgoDecryptOptions) -> Result<DsProtDecryptDetails, DsProtError> {
+    fn decrypt(&self, words: &mut [u32], options: &AlgoDecryptOptions) -> Result<DsProtDecryptResult, DsProtError> {
         let dsprot_bss = self.find_bss_variable(words, options)?;
         let obfuscated_function_tables = self.find_obfuscated_function_tables(options, words)?;
         let mut unkeyed_encrypted_functions =
@@ -361,12 +459,76 @@ trait DsProtAlgo {
         encrypted_functions.append(&mut keyed_encrypted_functions);
         encrypted_functions.sort_unstable_by_key(|f| f.address);
 
-        Ok(DsProtDecryptDetails::Post1_23 {
+        Ok(DsProtDecryptResult {
             version: options.version,
-            dsprot_bss,
+            encrypted_ranges: Vec::new(),
+            bss_variable: Some(dsprot_bss),
             encrypted_functions,
             encoded_function_pointers,
         })
+    }
+
+    fn encrypt(
+        &self,
+        words: &mut [u32],
+        decrypt_result: &DsProtDecryptResult,
+        options: &AlgoEncryptOptions,
+    ) -> Result<(), DsProtError> {
+        for function in &decrypt_result.encrypted_functions {
+            let start_offset = (function.address - options.base_address) as usize / 4;
+            let end_offset = start_offset + function.size as usize / 4;
+            let instructions = words.get_mut(start_offset..end_offset).ok_or_else(|| {
+                RangeOutOfBoundsSnafu {
+                    what: "function to encrypt",
+                    start: function.address,
+                    end: function.address + function.size,
+                    base_address: options.base_address,
+                    end_address: options.end_address,
+                }
+                .build()
+            })?;
+            match function.encryption {
+                EncryptionType::None => continue,
+                EncryptionType::Unkeyed => {
+                    let mut xor = self.unkeyed_encryption_xor();
+                    for ins in instructions {
+                        let (new_ins, new_xor) = self.unkeyed_encrypt_instruction(*ins, xor);
+                        *ins = new_ins;
+                        xor = new_xor;
+                    }
+                }
+                EncryptionType::Keyed(seed_key) => {
+                    let mut rc4 = self.init_rc4(seed_key, function.size);
+                    let mut prev_ins = 0;
+                    for ins in instructions {
+                        *ins = self.encrypt_instruction(&mut rc4, *ins, prev_ins);
+                        prev_ins = *ins;
+                    }
+                }
+            }
+        }
+        for range in &decrypt_result.encrypted_ranges {
+            let start_offset = (range.start_address - options.base_address) as usize / 4;
+            let end_offset = (range.end_address - options.base_address) as usize / 4;
+            let instructions = words.get_mut(start_offset..end_offset).ok_or_else(|| {
+                RangeOutOfBoundsSnafu {
+                    what: "range to encrypt",
+                    start: range.start_address,
+                    end: range.end_address,
+                    base_address: options.base_address,
+                    end_address: options.end_address,
+                }
+                .build()
+            })?;
+            let mut rc4 = self.init_rc4(range.seed_key, range.end_address - range.start_address);
+            let mut prev_ins = 0;
+            for ins in instructions {
+                *ins = self.encrypt_instruction(&mut rc4, *ins, prev_ins);
+                prev_ins = *ins;
+            }
+        }
+
+        Ok(())
     }
 
     fn find_bss_variable(&self, words: &[u32], options: &AlgoDecryptOptions) -> Result<u32, DsProtError> {
@@ -1085,6 +1247,7 @@ pub struct DsProtAlgoV6 {
     reference_offset: u32,
     unkeyed_encryption_xor: u32,
     precalculated_seed_key: u32,
+    decrypt_opcode: fn(curr: u8, prev: u8) -> u8,
     encrypt_opcode: fn(curr: u8, prev: u8) -> u8,
 }
 
@@ -1114,6 +1277,11 @@ impl DsProtAlgo for DsProtAlgoV1 {
         u32::from_le_bytes([rc4.decrypt_byte(bytes[0]), rc4.decrypt_byte(bytes[1]), bytes[2] ^ 0x01, bytes[3]])
     }
 
+    fn encrypt_instruction(&self, rc4: &mut Rc4, ins: u32, _prev_ins: u32) -> u32 {
+        let bytes = ins.to_le_bytes();
+        u32::from_le_bytes([rc4.encrypt_byte(bytes[0]), rc4.encrypt_byte(bytes[1]), bytes[2] ^ 0x01, bytes[3]])
+    }
+
     fn precalculated_seed_key(&self) -> Option<u32> {
         None
     }
@@ -1123,7 +1291,7 @@ impl DsProtAlgo for DsProtAlgoV1 {
         Rc4::new(&expanded_key, None)
     }
 
-    fn decrypt(&self, words: &mut [u32], options: &AlgoDecryptOptions) -> Result<DsProtDecryptDetails, DsProtError> {
+    fn decrypt(&self, words: &mut [u32], options: &AlgoDecryptOptions) -> Result<DsProtDecryptResult, DsProtError> {
         let AlgoDecryptOptions { base_address, version, .. } = *options;
 
         // Find the starts and keys of all encrypted code ranges
@@ -1133,22 +1301,22 @@ impl DsProtAlgo for DsProtAlgoV1 {
             .filter(|(_i, word)| [word[0], word[1], word[2], word[4], word[5]] == self.encrypted_range_start_signature)
             .map(|(i, word)| {
                 let start_address = base_address + i as u32 * 4 + 0x1c;
-                let key = word[6];
-                (start_address, key)
+                let seed_key = word[6];
+                (start_address, seed_key)
             })
             .collect();
 
         let mut encrypted_ranges = Vec::new();
-        for (start_address, key) in encrypted_range_starts {
-            log::debug!("Found encrypted range starting at {:#010x} with key {:#010x}", start_address, key);
+        for (start_address, seed_key) in encrypted_range_starts {
+            log::debug!("Found encrypted range starting at {:#010x} with key {:#010x}", start_address, seed_key);
 
-            let mut rc4 = self.init_rc4(key, 0); // function size not needed
+            let mut rc4 = self.init_rc4(seed_key, 0); // function size not needed
 
             for address in (start_address..).step_by(4) {
                 let offset = ((address - base_address) / 4) as usize;
                 let instruction = words[offset];
-                if instruction == key {
-                    encrypted_ranges.push(EncryptedRange { start_address, end_address: address });
+                if instruction == seed_key {
+                    encrypted_ranges.push(EncryptedRange { start_address, end_address: address, seed_key });
                     break;
                 }
                 let prev_ins = 0; // unused
@@ -1157,7 +1325,13 @@ impl DsProtAlgo for DsProtAlgoV1 {
         }
         encrypted_ranges.sort_unstable_by_key(|r| r.start_address);
 
-        Ok(DsProtDecryptDetails::Pre1_23 { version, encrypted_ranges })
+        Ok(DsProtDecryptResult {
+            version,
+            encrypted_ranges,
+            bss_variable: None,
+            encrypted_functions: Vec::new(),
+            encoded_function_pointers: Vec::new(),
+        })
     }
 }
 
@@ -1176,8 +1350,8 @@ impl DsProtAlgo for DsProtAlgoV2 {
 
     fn unkeyed_encrypt_instruction(&self, ins: u32, xor: u32) -> (u32, u32) {
         let new_ins = match InstructionCategory::new(ins) {
-            InstructionCategory::BlxImm | InstructionCategory::Bl => encrypt_branch_1(self.reference_offset, ins),
-            InstructionCategory::B => encrypt_branch_2(self.reference_offset, ins),
+            InstructionCategory::BlxImm | InstructionCategory::Bl => encrypt_branch_2(self.reference_offset, ins),
+            InstructionCategory::B => encrypt_branch_1(self.reference_offset, ins),
             InstructionCategory::Other => ins ^ xor,
         };
         (new_ins, xor)
@@ -1199,6 +1373,17 @@ impl DsProtAlgo for DsProtAlgoV2 {
             InstructionCategory::Other => {
                 let bytes = ins.to_le_bytes();
                 u32::from_le_bytes([rc4.decrypt_byte(bytes[0]), rc4.decrypt_byte(bytes[1]), bytes[2] ^ 1, bytes[3]])
+            }
+        }
+    }
+
+    fn encrypt_instruction(&self, rc4: &mut Rc4, ins: u32, _prev_ins: u32) -> u32 {
+        match InstructionCategory::new(ins) {
+            InstructionCategory::BlxImm | InstructionCategory::Bl => encrypt_branch_2(self.reference_offset, ins),
+            InstructionCategory::B => encrypt_branch_1(self.reference_offset, ins),
+            InstructionCategory::Other => {
+                let bytes = ins.to_le_bytes();
+                u32::from_le_bytes([rc4.encrypt_byte(bytes[0]), rc4.encrypt_byte(bytes[1]), bytes[2] ^ 1, bytes[3]])
             }
         }
     }
@@ -1228,11 +1413,11 @@ impl DsProtAlgo for DsProtAlgoV3 {
 
     fn unkeyed_encrypt_instruction(&self, ins: u32, xor: u32) -> (u32, u32) {
         match InstructionCategory::new(ins) {
-            InstructionCategory::BlxImm | InstructionCategory::B => {
-                let new_ins = decrypt_branch_2(self.reference_offset, ins);
+            InstructionCategory::BlxImm | InstructionCategory::Bl => {
+                let new_ins = encrypt_branch_2(self.reference_offset, ins);
                 (new_ins, xor)
             }
-            InstructionCategory::Bl => {
+            InstructionCategory::B => {
                 let new_ins = ins ^ xor ^ 0x01000000; // flip link bit
                 (new_ins, (xor << 1).wrapping_add(ins) & 0xffffff)
             }
@@ -1279,6 +1464,25 @@ impl DsProtAlgo for DsProtAlgoV3 {
         }
     }
 
+    fn encrypt_instruction(&self, rc4: &mut Rc4, ins: u32, _prev_ins: u32) -> u32 {
+        match InstructionCategory::new(ins) {
+            InstructionCategory::BlxImm | InstructionCategory::Bl => encrypt_branch_2(self.reference_offset, ins),
+            category => {
+                let bytes = ins.to_le_bytes();
+                u32::from_le_bytes([
+                    rc4.encrypt_byte(bytes[0]),
+                    rc4.encrypt_byte(bytes[1]),
+                    bytes[2] ^ 0x3f,
+                    if category == InstructionCategory::B {
+                        bytes[3] ^ 0x01 // flip link bit
+                    } else {
+                        bytes[3]
+                    },
+                ])
+            }
+        }
+    }
+
     fn precalculated_seed_key(&self) -> Option<u32> {
         None
     }
@@ -1304,11 +1508,11 @@ impl DsProtAlgo for DsProtAlgoV4 {
 
     fn unkeyed_encrypt_instruction(&self, ins: u32, xor: u32) -> (u32, u32) {
         match InstructionCategory::new(ins) {
-            InstructionCategory::BlxImm | InstructionCategory::B => {
-                let new_ins = decrypt_branch_2(self.reference_offset, ins);
+            InstructionCategory::BlxImm | InstructionCategory::Bl => {
+                let new_ins = encrypt_branch_2(self.reference_offset, ins);
                 (new_ins, (xor ^ (ins >> 24)) & 0xffffff)
             }
-            InstructionCategory::Bl => {
+            InstructionCategory::B => {
                 let new_ins = ins ^ xor ^ 0x01000000; // flip link bit
                 (new_ins, (xor ^ ins ^ (ins >> 8)) & 0xffffff)
             }
@@ -1355,6 +1559,32 @@ impl DsProtAlgo for DsProtAlgoV4 {
                     },
                 ]);
                 rc4.update_x(|x| bytes[2].wrapping_mul(x).wrapping_sub(bytes[3]));
+                result
+            }
+        }
+    }
+
+    fn encrypt_instruction(&self, rc4: &mut Rc4, ins: u32, _prev_ins: u32) -> u32 {
+        match InstructionCategory::new(ins) {
+            InstructionCategory::BlxImm | InstructionCategory::Bl => {
+                let new_ins = encrypt_branch_2(self.reference_offset, ins);
+                rc4.update_x(|x| x.wrapping_add((new_ins >> 24) as u8));
+                new_ins
+            }
+            category => {
+                let bytes = ins.to_le_bytes();
+                let new_bytes = [
+                    rc4.encrypt_byte(bytes[0]),
+                    rc4.encrypt_byte(bytes[1]),
+                    bytes[2] ^ 0xff,
+                    if category == InstructionCategory::B {
+                        bytes[3] ^ 0x01 // flip link bit
+                    } else {
+                        bytes[3]
+                    },
+                ];
+                let result = u32::from_le_bytes(new_bytes);
+                rc4.update_x(|x| new_bytes[2].wrapping_mul(x).wrapping_sub(new_bytes[3]));
                 result
             }
         }
@@ -1419,6 +1649,32 @@ impl DsProtAlgo for DsProtAlgoV5 {
         }
     }
 
+    fn encrypt_instruction(&self, rc4: &mut Rc4, ins: u32, _prev_ins: u32) -> u32 {
+        match InstructionCategory::new(ins) {
+            InstructionCategory::BlxImm | InstructionCategory::Bl => {
+                let new_ins = encrypt_branch_2(self.reference_offset, ins);
+                rc4.update_x(|x| x.wrapping_add((new_ins >> 24) as u8));
+                new_ins
+            }
+            category => {
+                let bytes = ins.to_le_bytes();
+                let new_bytes = [
+                    rc4.encrypt_byte(bytes[0]),
+                    rc4.encrypt_byte(bytes[1]),
+                    rc4.encrypt_byte(bytes[2]),
+                    if category == InstructionCategory::B {
+                        bytes[3] ^ 0x01 // flip link bit
+                    } else {
+                        bytes[3]
+                    },
+                ];
+                let result = u32::from_le_bytes(new_bytes);
+                rc4.update_x(|x| x.wrapping_sub(new_bytes[3]));
+                result
+            }
+        }
+    }
+
     fn precalculated_seed_key(&self) -> Option<u32> {
         None
     }
@@ -1457,7 +1713,7 @@ impl DsProtAlgo for DsProtAlgoV6 {
     fn decrypt_instruction(&self, rc4: &mut Rc4, ins: u32, prev_ins: u32) -> u32 {
         let opcode = (ins >> 24) as u8;
         let prev_opcode = (prev_ins >> 24) as u8;
-        let new_opcode = (self.encrypt_opcode)(opcode, prev_opcode);
+        let new_opcode = (self.decrypt_opcode)(opcode, prev_opcode);
         let ins = (ins & 0xffffff) | ((new_opcode as u32) << 24);
         let category = InstructionCategory::new(ins);
         let new_ins = match category {
@@ -1480,6 +1736,33 @@ impl DsProtAlgo for DsProtAlgoV6 {
         }
     }
 
+    fn encrypt_instruction(&self, rc4: &mut Rc4, ins: u32, prev_ins: u32) -> u32 {
+        let category = InstructionCategory::new(ins);
+        let new_ins = match category {
+            InstructionCategory::BlxImm | InstructionCategory::Bl => encrypt_branch_2(self.reference_offset, ins),
+            InstructionCategory::B | InstructionCategory::Other => {
+                let bytes = ins.to_le_bytes();
+                u32::from_le_bytes([
+                    rc4.encrypt_byte(bytes[0]),
+                    rc4.encrypt_byte(bytes[1]),
+                    rc4.encrypt_byte(bytes[2]),
+                    bytes[3],
+                ])
+            }
+        };
+        let new_ins = match category {
+            // flip link bit
+            InstructionCategory::BlxImm | InstructionCategory::B => new_ins ^ 0x01000000,
+            InstructionCategory::Bl | InstructionCategory::Other => new_ins,
+        };
+        let opcode = (new_ins >> 24) as u8;
+        let prev_opcode = (prev_ins >> 24) as u8;
+        let new_opcode = (self.encrypt_opcode)(opcode, prev_opcode);
+        let new_ins = (new_ins & 0xffffff) | ((new_opcode as u32) << 24);
+        rc4.update_x(|x| x.wrapping_sub(new_opcode));
+        new_ins
+    }
+
     fn precalculated_seed_key(&self) -> Option<u32> {
         Some(self.precalculated_seed_key)
     }
@@ -1490,79 +1773,89 @@ impl DsProtAlgo for DsProtAlgoV6 {
     }
 }
 
-/// Contains complete information about how DS Protect's encrypted code was decrypted.
-#[derive(Serialize, Deserialize)]
-pub enum DsProtDecryptDetails {
-    /// Before DS Protect version 1.23
-    Pre1_23 {
-        /// The DS Protect version number.
-        version: &'static str,
-        /// List of encrypted ranges of instructions.
-        encrypted_ranges: Vec<EncryptedRange>,
-    },
-    /// DS Protect version 1.23 and onwards
-    Post1_23 {
-        /// The DS Protect version number.
-        version: &'static str,
-        /// Address of the DS Protect BSS variable. Used for offsetting constants.
-        dsprot_bss: u32,
-        /// List of encrypted functions.
-        encrypted_functions: Vec<EncryptedFunction>,
-        /// List of encoded function pointers.
-        encoded_function_pointers: Vec<EncodedFunctionPointer>,
-    },
+/// Contains the result of decrypting DS Protect code.
+#[derive(Serialize, Deserialize, Clone, PartialEq, Eq, Debug)]
+pub struct DsProtDecryptResult {
+    /// The version of DS Protect that was used.
+    pub version: DsProtVersionNumber,
+    /// List of encrypted ranges of instructions.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub encrypted_ranges: Vec<EncryptedRange>,
+    /// Address of the DS Protect BSS variable. Used for offsetting constants.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bss_variable: Option<u32>,
+    /// List of encrypted functions.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub encrypted_functions: Vec<EncryptedFunction>,
+    /// List of encoded function pointers.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub encoded_function_pointers: Vec<EncodedFunctionPointer>,
 }
 
-impl DsProtDecryptDetails {
-    /// Returns a [`DisplayDsProtDecryptDetails`] which implements [`Display`].
-    pub fn display(&self, indent: usize) -> DisplayDsProtDecryptDetails<'_> {
-        DisplayDsProtDecryptDetails { inner: self, indent }
+impl DsProtDecryptResult {
+    /// Returns a [`DisplayDsProtDecryptResult`] which implements [`Display`].
+    pub fn display(&self, indent: usize) -> DisplayDsProtDecryptResult<'_> {
+        DisplayDsProtDecryptResult { inner: self, indent }
+    }
+
+    pub(crate) fn encrypt(&self, data: &mut [u8], base_address: u32) -> Result<(), DsProtError> {
+        let Some(dsprot_version) = DSPROT_VERSIONS.iter().find(|v| v.number == self.version) else {
+            return Ok(());
+        };
+
+        let end_address = base_address + data.len() as u32;
+
+        // Make 32-bit chunks
+        let words: &mut [u32] = bytemuck::cast_slice_mut(data);
+
+        dsprot_version.algo.encrypt(words, self, &AlgoEncryptOptions { base_address, end_address })
     }
 }
 
-/// Can be used to display values inside [`DsProtDecryptDetails`].
-pub struct DisplayDsProtDecryptDetails<'a> {
-    inner: &'a DsProtDecryptDetails,
+/// Can be used to display values inside [`DsProtDecryptResult`].
+pub struct DisplayDsProtDecryptResult<'a> {
+    inner: &'a DsProtDecryptResult,
     indent: usize,
 }
 
-impl Display for DisplayDsProtDecryptDetails<'_> {
+impl Display for DisplayDsProtDecryptResult<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let i = " ".repeat(self.indent);
         let inner = self.inner;
-        match inner {
-            DsProtDecryptDetails::Pre1_23 { version, encrypted_ranges } => {
-                writeln!(f, "{i}Version ........... : {}", version)?;
-                writeln!(f, "{i}Encrypted ranges .. :")?;
-                for range in encrypted_ranges {
-                    writeln!(f, "{i}  {:#010x}..{:#010x}", range.start_address, range.end_address)?;
-                }
+        writeln!(f, "{i}Version .................... : {}", inner.version)?;
+        if !inner.encrypted_ranges.is_empty() {
+            writeln!(f, "{i}Encrypted ranges ........... :")?;
+            for range in &inner.encrypted_ranges {
+                writeln!(f, "{i}  {:#010x}..{:#010x}", range.start_address, range.end_address)?;
             }
-            DsProtDecryptDetails::Post1_23 { version, dsprot_bss, encrypted_functions, encoded_function_pointers } => {
-                writeln!(f, "{i}Version .................... : {}", version)?;
-                writeln!(f, "{i}BSS variable ............... : {:#010x}", dsprot_bss)?;
-                writeln!(f, "{i}Encrypted functions ........ :")?;
-                for function in encrypted_functions {
-                    writeln!(f, "{i}  Address ................ : {:#010x}", function.address)?;
-                    writeln!(f, "{i}  Size ................... : {:#x}", function.size)?;
-                    write!(f, "{i}  Encryption ............. : ")?;
-                    match function.encryption {
-                        EncryptionType::None => {
-                            writeln!(f, "None")?;
-                        }
-                        EncryptionType::Unkeyed => {
-                            writeln!(f, "Unkeyed")?;
-                        }
-                        EncryptionType::Keyed(seed_key) => {
-                            writeln!(f, "Keyed ({:#x})", seed_key)?;
-                        }
+        }
+        if let Some(bss_variable) = inner.bss_variable {
+            writeln!(f, "{i}BSS variable ............... : {:#010x}", bss_variable)?;
+        }
+        if !inner.encrypted_functions.is_empty() {
+            writeln!(f, "{i}Encrypted functions ........ :")?;
+            for function in &inner.encrypted_functions {
+                writeln!(f, "{i}  Address ................ : {:#010x}", function.address)?;
+                writeln!(f, "{i}  Size ................... : {:#x}", function.size)?;
+                write!(f, "{i}  Encryption ............. : ")?;
+                match function.encryption {
+                    EncryptionType::None => {
+                        writeln!(f, "None")?;
                     }
-                    writeln!(f, "{i}  Encoded constant pool .. : {:?}\n", function.constant_pool)?;
+                    EncryptionType::Unkeyed => {
+                        writeln!(f, "Unkeyed")?;
+                    }
+                    EncryptionType::Keyed(seed_key) => {
+                        writeln!(f, "Keyed ({:#x})", seed_key)?;
+                    }
                 }
-                writeln!(f, "{i}Encoded function pointers .. :")?;
-                for fn_ptr in encoded_function_pointers {
-                    writeln!(f, "{i}  Address .. : {:#010x}", fn_ptr.0)?;
-                }
+                writeln!(f, "{i}  Encoded constant pool .. : {:?}\n", function.constant_pool)?;
+            }
+        }
+        if !inner.encoded_function_pointers.is_empty() {
+            writeln!(f, "{i}Encoded function pointers .. :")?;
+            for fn_ptr in &inner.encoded_function_pointers {
+                writeln!(f, "{i}  Address .. : {:#010x}", fn_ptr.0)?;
             }
         }
         Ok(())
@@ -1570,14 +1863,27 @@ impl Display for DisplayDsProtDecryptDetails<'_> {
 }
 
 /// Represents an address range of encrypted instructions.
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone, PartialEq, Eq, Debug)]
 pub struct EncryptedRange {
     start_address: u32,
     end_address: u32,
+    seed_key: u32,
+}
+
+impl EncryptedRange {
+    /// Returns the start address of this [`EncryptedRange`].
+    pub fn start_address(&self) -> u32 {
+        self.start_address
+    }
+
+    /// Returns the end address of this [`EncryptedRange`].
+    pub fn end_address(&self) -> u32 {
+        self.end_address
+    }
 }
 
 /// Contains information about an encrypted function.
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone, PartialEq, Eq, Debug)]
 pub struct EncryptedFunction {
     address: u32,
     size: u32,
@@ -1585,14 +1891,39 @@ pub struct EncryptedFunction {
     constant_pool: EncodedConstantPool,
 }
 
+impl EncryptedFunction {
+    /// Returns the address of this [`EncryptedFunction`].
+    pub fn address(&self) -> u32 {
+        self.address
+    }
+
+    /// Returns the size of this [`EncryptedFunction`].
+    pub fn size(&self) -> u32 {
+        self.size
+    }
+
+    /// Returns the [`EncryptionType`] of this [`EncryptedFunction`].
+    pub fn encryption(&self) -> EncryptionType {
+        self.encryption
+    }
+
+    /// Returns the [`EncodedConstantPool`] of this [`EncryptedFunction`].
+    pub fn constant_pool(&self) -> EncodedConstantPool {
+        self.constant_pool
+    }
+}
+
 /// The type of encryption used on an [`EncryptedFunction`].
-#[derive(Clone, Copy, Serialize, Deserialize)]
+#[derive(Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Debug)]
 pub enum EncryptionType {
     /// No encryption, only encoded constant pool.
+    #[serde(rename = "none")]
     None,
     /// Unkeyed encryption using an XOR cipher.
+    #[serde(rename = "unkeyed")]
     Unkeyed,
     /// Keyed encryption using modified [`Rc4`].
+    #[serde(rename = "keyed")]
     Keyed(u32),
 }
 
@@ -1641,5 +1972,56 @@ pub enum EncodedConstantPool {
 
 /// Represents a function pointer in a data section, which was encoded by adding the reference
 /// offset value.
-#[derive(PartialEq, Eq, Clone, Copy, Serialize, Deserialize)]
+#[derive(PartialEq, Eq, Clone, Copy, Serialize, Deserialize, Debug)]
 pub struct EncodedFunctionPointer(u32);
+
+/// Defines whether DS Protect is present in the ARM9 program or an ARM9 overlay, and whether it
+/// is currently encrypted.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub enum DsProtState {
+    /// Not present.
+    None,
+    /// Present and unencrypted.
+    Unencrypted(DsProtDecryptResult),
+    /// Present and encrypted.
+    Encrypted(DsProtDecryptResult),
+}
+
+impl DsProtState {
+    /// Returns `true` if DS Protect is not present. Opposite of [`DsProtState::is_present`].
+    pub fn is_none(&self) -> bool {
+        match self {
+            DsProtState::None => true,
+            DsProtState::Unencrypted(_) | DsProtState::Encrypted(_) => false,
+        }
+    }
+
+    /// Returns `true` if DS Protect is present. Opposite of [`DsProtState::is_none`].
+    pub fn is_present(&self) -> bool {
+        !self.is_none()
+    }
+
+    /// Returns `true` if DS Protect is present and encrypted.
+    pub fn is_encrypted(&self) -> bool {
+        match self {
+            DsProtState::Encrypted(_) => true,
+            DsProtState::None | DsProtState::Unencrypted(_) => false,
+        }
+    }
+
+    /// Returns `true` if DS Protect is present and unencrypted.
+    pub fn is_unencrypted(&self) -> bool {
+        match self {
+            DsProtState::Unencrypted(_) => true,
+            DsProtState::None | DsProtState::Encrypted(_) => false,
+        }
+    }
+
+    /// Returns `Some` containing a [`DsProtDecryptResult`] if DS Protect is present.
+    pub fn as_option(&self) -> Option<&DsProtDecryptResult> {
+        match self {
+            DsProtState::None => None,
+            DsProtState::Unencrypted(result) | DsProtState::Encrypted(result) => Some(result),
+        }
+    }
+}

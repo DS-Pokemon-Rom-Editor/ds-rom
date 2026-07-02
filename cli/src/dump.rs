@@ -581,11 +581,11 @@ impl DumpDsProt {
             }
         } else {
             let mut details_list = HashMap::new();
-            if let Some(details) = arm9.decrypt_dsprot(&options)? {
+            if let Some(details) = arm9.decrypt_dsprot(&options)?.cloned() {
                 details_list.insert("arm9".to_string(), details);
             }
             for overlay in rom.arm9_overlays_mut() {
-                if let Some(details) = overlay.decrypt_dsprot(&options)? {
+                if let Some(details) = overlay.decrypt_dsprot(&options)?.cloned() {
                     details_list.insert(format!("ov{:03}", overlay.id()), details);
                 }
             }

@@ -9,25 +9,26 @@ use serde::{Deserialize, Serialize};
 use snafu::Snafu;
 
 use super::{
-    raw::{
-        self, Arm9Footer, HmacSha1Signature, RawArm9Error, RawBannerError, RawBuildInfoError, RawFatError, RawFntError,
-        RawHeaderError, RawOverlayError, RomAlignmentsError, TableOffset,
-    },
     Arm7, Arm9, Arm9AutoloadError, Arm9Error, Arm9HmacSha1KeyError, Arm9Offsets, Arm9OverlaySignaturesError, Autoload, Banner,
     BannerError, BannerImageError, BuildInfo, FileBuildError, FileParseError, FileSystem, Header, HeaderBuildError, Logo,
     LogoError, LogoLoadError, LogoSaveError, Overlay, OverlayError, OverlayInfo, OverlayOptions, OverlayTable,
     RomConfigAutoload, RomConfigUnknownAutoload,
+    raw::{
+        self, Arm9Footer, HmacSha1Signature, RawArm9Error, RawBannerError, RawBuildInfoError, RawFatError, RawFntError,
+        RawHeaderError, RawOverlayError, RomAlignmentsError, TableOffset,
+    },
 };
 use crate::{
     compress::lz77::Lz77DecompressError,
     crypto::{
         blowfish::BlowfishKey,
+        dsprot::{DecryptOptions, DsProtDecryptResult, DsProtState},
         hmac_sha1::{HmacSha1, HmacSha1FromBytesError},
     },
-    io::{create_dir_all, create_file, create_file_and_dirs, open_file, read_file, read_to_string, FileError},
+    io::{FileError, create_dir_all, create_file, create_file_and_dirs, open_file, read_file, read_to_string},
     rom::{
+        Arm9DsProtInfoError, Arm9WithTcmsOptions, OverlayDsProtError, RomConfig,
         raw::{FileAlloc, MultibootSignature, RawMultibootSignatureError},
-        Arm9WithTcmsOptions, RomConfig,
     },
 };
 
@@ -139,6 +140,24 @@ pub enum RomExtractError {
     RawMultibootSignature {
         /// Source error.
         source: RawMultibootSignatureError,
+    },
+    /// See [`Arm9DsProtInfoError`].
+    #[snafu(transparent)]
+    Arm9DsProtInfo {
+        /// Source error.
+        source: Arm9DsProtInfoError,
+    },
+    /// See [`OverlayDsProtError`].
+    #[snafu(transparent)]
+    OverlayDsProt {
+        /// Source error.
+        source: OverlayDsProtError,
+    },
+    /// See [`Lz77DecompressError`].
+    #[snafu(transparent)]
+    Lz77Decompress {
+        /// Source error.
+        source: Lz77DecompressError,
     },
 }
 
@@ -296,6 +315,8 @@ pub struct Arm9BuildConfig {
     /// Build info for this module.
     #[serde(flatten)]
     pub build_info: BuildInfo,
+    /// Information about DS Protect.
+    pub dsprot: Option<DsProtDecryptResult>,
 }
 
 /// Overlay configuration, extending [`OverlayInfo`] with more fields.
@@ -308,6 +329,9 @@ pub struct OverlayConfig {
     pub signed: bool,
     /// Name of binary file.
     pub file_name: String,
+    /// Stores information about DS Protect functions that were decrypted in this overlay.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dsprot: Option<DsProtDecryptResult>,
 }
 
 /// Configuration for the overlay table, used for both ARM9 and ARM7 overlays.
@@ -390,6 +414,7 @@ impl<'a> Rom<'a> {
         let mut arm9 = Arm9::with_autoloads(arm9, &autoloads, arm9_build_config.offsets, Arm9WithTcmsOptions {
             originally_compressed: arm9_build_config.compressed,
             originally_encrypted: arm9_build_config.encrypted,
+            dsprot: arm9_build_config.dsprot,
         })?;
         arm9_build_config.build_info.assign_to_raw(arm9.build_info_mut()?);
         arm9.update_overlay_signatures(&arm9_overlays)?;
@@ -480,6 +505,7 @@ impl<'a> Rom<'a> {
                 info: config.info,
                 originally_compressed: compressed,
                 originally_signed: config.signed,
+                dsprot: config.dsprot,
             })?;
 
             if options.compress {
@@ -639,6 +665,7 @@ impl<'a> Rom<'a> {
             encrypted: self.arm9.is_encrypted(),
             compressed: self.arm9.is_compressed()?,
             build_info: (*self.arm9.build_info()?).into(),
+            dsprot: self.arm9.dsprot_state().as_option().cloned(),
         })
     }
 
@@ -657,6 +684,7 @@ impl<'a> Rom<'a> {
                     info: plain_overlay.info().clone(),
                     file_name: format!("{name}.bin"),
                     signed: overlay.is_signed(),
+                    dsprot: overlay.dsprot_state().as_option().cloned(),
                 });
 
                 if plain_overlay.is_compressed() {
@@ -691,12 +719,12 @@ impl<'a> Rom<'a> {
         let file_root = FileSystem::parse(&fnt, fat, rom)?;
         let path_order = file_root.compute_path_order();
 
-        let arm9 = rom.arm9()?;
+        let mut arm9 = rom.arm9()?;
         let mut decompressed_arm9 = arm9.clone();
         decompressed_arm9.decompress()?;
 
         let arm9_overlays = rom.arm9_overlay_table_with(&decompressed_arm9)?;
-        let arm9_overlays = OverlayTable::parse_arm9(arm9_overlays, rom, &decompressed_arm9)?;
+        let mut arm9_overlays = OverlayTable::parse_arm9(arm9_overlays, rom, &decompressed_arm9)?;
         let arm7_overlays = rom.arm7_overlay_table()?;
         let arm7_overlays = OverlayTable::parse_arm7(arm7_overlays, rom)?;
 
@@ -722,6 +750,21 @@ impl<'a> Rom<'a> {
         let multiboot_signature = rom.multiboot_signature()?;
 
         let alignment = rom.alignments()?;
+
+        // Decrypt DS Protect functions in ARM9 program and overlays. This stores a
+        // DsProtDecryptResult on those that were decrypted, which can be serialized to arm9.yaml
+        // or overlays.yaml.
+        let dsprot_options = DecryptOptions { decode_literals: true };
+        if let Some(result) = decompressed_arm9.decrypt_dsprot(&dsprot_options)? {
+            arm9.set_dsprot_state(DsProtState::Encrypted(result.clone()));
+        }
+        for overlay in arm9_overlays.overlays_mut() {
+            let mut decompressed_overlay = overlay.clone();
+            decompressed_overlay.decompress()?;
+            if let Some(result) = decompressed_overlay.decrypt_dsprot(&dsprot_options)? {
+                overlay.set_dsprot_state(DsProtState::Encrypted(result.clone()));
+            }
+        }
 
         let config = RomConfig {
             file_image_padding_value: rom.file_image_padding_value()?,
