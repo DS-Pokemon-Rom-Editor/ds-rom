@@ -10,7 +10,7 @@ use super::{
 use crate::{
     compress::lz77::{Lz77, Lz77DecompressError},
     crypto::{
-        dsprot::{DecryptOptions, DsProtDecryptResult, DsProtError, DsProtInfo, DsProtState},
+        dsprot::{DsProtDecryptOptions, DsProtDecryptResult, DsProtEncryptOptions, DsProtError, DsProtInfo, DsProtState},
         hmac_sha1::HmacSha1,
     },
     rom::Arm9HmacSha1KeyError,
@@ -344,7 +344,10 @@ impl<'a> Overlay<'a> {
     /// # Errors
     ///
     /// This function will return an error if [`DsProtInfo::decrypt`] fails.
-    pub fn decrypt_dsprot(&mut self, options: &DecryptOptions) -> Result<Option<&DsProtDecryptResult>, OverlayDsProtError> {
+    pub fn decrypt_dsprot(
+        &mut self,
+        options: &DsProtDecryptOptions,
+    ) -> Result<Option<&DsProtDecryptResult>, OverlayDsProtError> {
         let Some(dsprot_info) = self.dsprot_info()? else {
             // DS Protect is not used
             return Ok(None);
@@ -363,7 +366,7 @@ impl<'a> Overlay<'a> {
     /// # Errors
     ///
     /// This function will return an error if [`DsProtInfo::decrypt`] fails.
-    pub fn encrypt_dsprot(&mut self) -> Result<(), OverlayDsProtError> {
+    pub fn encrypt_dsprot(&mut self, options: &DsProtEncryptOptions) -> Result<(), OverlayDsProtError> {
         let dsprot_state = std::mem::replace(&mut self.dsprot_state, DsProtState::None);
         let DsProtState::Unencrypted(dsprot_result) = dsprot_state else {
             self.dsprot_state = dsprot_state; // revert replace
@@ -371,7 +374,7 @@ impl<'a> Overlay<'a> {
         };
 
         let base_address = self.base_address();
-        dsprot_result.encrypt(self.data.to_mut(), base_address)?;
+        dsprot_result.encrypt(self.data.to_mut(), base_address, options)?;
         self.dsprot_state = DsProtState::Encrypted(dsprot_result);
 
         Ok(())

@@ -22,7 +22,7 @@ use crate::{
     compress::lz77::Lz77DecompressError,
     crypto::{
         blowfish::BlowfishKey,
-        dsprot::{DecryptOptions, DsProtDecryptResult, DsProtState},
+        dsprot::{DsProtDecryptOptions, DsProtDecryptResult, DsProtState},
         hmac_sha1::{HmacSha1, HmacSha1FromBytesError},
     },
     io::{FileError, create_dir_all, create_file, create_file_and_dirs, open_file, read_file, read_to_string},
@@ -754,7 +754,7 @@ impl<'a> Rom<'a> {
         // Decrypt DS Protect functions in ARM9 program and overlays. This stores a
         // DsProtDecryptResult on those that were decrypted, which can be serialized to arm9.yaml
         // or overlays.yaml.
-        let dsprot_options = DecryptOptions { decode_literals: true };
+        let dsprot_options = DsProtDecryptOptions { decode_relocations: true };
         if let Some(result) = decompressed_arm9.decrypt_dsprot(&dsprot_options)? {
             arm9.set_dsprot_state(DsProtState::Encrypted(result.clone()));
         }

@@ -1,6 +1,6 @@
 use anyhow::Result;
 use ds_rom::{
-    crypto::dsprot::DecryptOptions,
+    crypto::dsprot::{DsProtDecryptOptions, DsProtEncryptOptions},
     rom::{Rom, raw},
 };
 use log::LevelFilter;
@@ -22,8 +22,8 @@ fn test_dsprot_decrypt_encrypt() -> Result<()> {
         let raw_rom = raw::Rom::from_file(&path)?;
         let rom = Rom::extract(&raw_rom)?;
 
-        // There's no counterpart to `decode_literals` for re-encryption, so it must be false
-        let decrypt_options = DecryptOptions { decode_literals: false };
+        let decrypt_options = DsProtDecryptOptions { decode_relocations: true };
+        let encrypt_options = DsProtEncryptOptions { encode_relocations: true };
 
         // Decrypt and re-encrypt
         let arm9 = rom.arm9();
@@ -34,7 +34,7 @@ fn test_dsprot_decrypt_encrypt() -> Result<()> {
                 arm9_clone.decompress()?;
             }
             arm9_clone.decrypt_dsprot(&decrypt_options)?;
-            arm9_clone.encrypt_dsprot()?;
+            arm9_clone.encrypt_dsprot(&encrypt_options)?;
             if compressed {
                 arm9_clone.compress()?;
             }
@@ -49,7 +49,7 @@ fn test_dsprot_decrypt_encrypt() -> Result<()> {
                     overlay_clone.decompress()?;
                 }
                 overlay_clone.decrypt_dsprot(&decrypt_options)?;
-                overlay_clone.encrypt_dsprot()?;
+                overlay_clone.encrypt_dsprot(&encrypt_options)?;
                 if compressed {
                     overlay_clone.compress()?;
                 }

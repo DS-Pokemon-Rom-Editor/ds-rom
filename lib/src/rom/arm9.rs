@@ -15,7 +15,7 @@ use crate::{
     crc::CRC_16_MODBUS,
     crypto::{
         blowfish::{Blowfish, BlowfishError, BlowfishKey, BlowfishLevel},
-        dsprot::{DecryptOptions, DsProtDecryptResult, DsProtError, DsProtInfo, DsProtState},
+        dsprot::{DsProtDecryptOptions, DsProtDecryptResult, DsProtEncryptOptions, DsProtError, DsProtInfo, DsProtState},
     },
     rom::LibraryEntry,
 };
@@ -784,7 +784,10 @@ impl<'a> Arm9<'a> {
     /// # Errors
     ///
     /// This function will return an error if [`DsProtInfo::decrypt`] fails.
-    pub fn decrypt_dsprot(&mut self, options: &DecryptOptions) -> Result<Option<&DsProtDecryptResult>, Arm9DsProtInfoError> {
+    pub fn decrypt_dsprot(
+        &mut self,
+        options: &DsProtDecryptOptions,
+    ) -> Result<Option<&DsProtDecryptResult>, Arm9DsProtInfoError> {
         let Some(dsprot_info) = self.dsprot_info()? else {
             // DS Protect is not used
             return Ok(None);
@@ -803,14 +806,14 @@ impl<'a> Arm9<'a> {
     /// # Errors
     ///
     /// This function will return an error if [`DsProtInfo::decrypt`] fails.
-    pub fn encrypt_dsprot(&mut self) -> Result<(), Arm9DsProtInfoError> {
+    pub fn encrypt_dsprot(&mut self, options: &DsProtEncryptOptions) -> Result<(), Arm9DsProtInfoError> {
         let dsprot_state = std::mem::replace(&mut self.dsprot_state, DsProtState::None);
         let DsProtState::Unencrypted(dsprot_result) = dsprot_state else {
             return Ok(());
         };
 
         let base_address = self.base_address();
-        dsprot_result.encrypt(self.data.to_mut(), base_address)?;
+        dsprot_result.encrypt(self.data.to_mut(), base_address, options)?;
         self.dsprot_state = DsProtState::Encrypted(dsprot_result);
 
         Ok(())

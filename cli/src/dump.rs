@@ -4,7 +4,7 @@ use anyhow::{Context, Result, bail};
 use clap::{Args, Subcommand};
 use ds_rom::{
     compress::lz77::Lz77,
-    crypto::{blowfish::BlowfishKey, dsprot::DecryptOptions, hmac_sha1::HmacSha1},
+    crypto::{blowfish::BlowfishKey, dsprot::DsProtDecryptOptions, hmac_sha1::HmacSha1},
     rom::{self, Arm9, Logo, Overlay, Rom, raw},
 };
 
@@ -560,7 +560,7 @@ impl DumpDsProt {
             overlay.decompress()?;
         }
 
-        let options = DecryptOptions { decode_literals: true };
+        let options = DsProtDecryptOptions { decode_relocations: true };
 
         let arm9 = rom.arm9_mut();
         if !self.yaml {
