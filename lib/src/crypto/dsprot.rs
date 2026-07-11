@@ -309,7 +309,7 @@ pub enum DsProtError {
 }
 
 /// Options for [`DsProtInfo::decrypt`].
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub struct DsProtDecryptOptions {
     /// If true, pointers and constants will be decoded. This applies to constant pools and global
     /// variables managed by DS Protect.
@@ -317,7 +317,7 @@ pub struct DsProtDecryptOptions {
 }
 
 /// Options for [`DsProtDecryptResult::encrypt`].
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub struct DsProtEncryptOptions {
     /// If true, pointers and constants will be decoded. This applies to constant pools and global
     /// variables managed by DS Protect.
@@ -1946,9 +1946,10 @@ pub struct DsProtRelocation {
 
 /// Defines whether DS Protect is present in the ARM9 program or an ARM9 overlay, and whether it
 /// is currently encrypted.
-#[derive(Clone, PartialEq, Eq, Debug)]
+#[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize, Default)]
 pub enum DsProtState {
     /// Not present.
+    #[default]
     None,
     /// Present and unencrypted.
     Unencrypted(DsProtDecryptResult),

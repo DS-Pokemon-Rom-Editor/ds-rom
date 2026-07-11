@@ -197,8 +197,8 @@ pub struct Arm9WithTcmsOptions {
     pub originally_compressed: bool,
     /// Whether the program was encrypted originally.
     pub originally_encrypted: bool,
-    /// DS Protect decryption info, used for re-encrypting DS Protect functions.
-    pub dsprot: Option<DsProtDecryptResult>,
+    /// Current state of DS Protect. Can be absent, encrypted or unencrypted.
+    pub dsprot_state: DsProtState,
 }
 
 impl<'a> Arm9<'a> {
@@ -240,8 +240,7 @@ impl<'a> Arm9<'a> {
         data.extend(bytemuck::bytes_of(&autoload_infos));
         let autoload_infos_end = data.len() as u32 + offsets.base_address;
 
-        let Arm9WithTcmsOptions { originally_compressed, originally_encrypted, dsprot } = options;
-        let dsprot_state = if let Some(dsprot) = dsprot { DsProtState::Encrypted(dsprot) } else { DsProtState::None };
+        let Arm9WithTcmsOptions { originally_compressed, originally_encrypted, dsprot_state } = options;
         let mut arm9 = Self { data: data.into(), offsets, originally_compressed, originally_encrypted, dsprot_state };
 
         let build_info = arm9.build_info_mut()?;
@@ -275,8 +274,7 @@ impl<'a> Arm9<'a> {
         }
         let autoload_infos_end = data.len() as u32 + offsets.base_address;
 
-        let Arm9WithTcmsOptions { originally_compressed, originally_encrypted, dsprot } = options;
-        let dsprot_state = if let Some(dsprot) = dsprot { DsProtState::Encrypted(dsprot) } else { DsProtState::None };
+        let Arm9WithTcmsOptions { originally_compressed, originally_encrypted, dsprot_state } = options;
         let mut arm9 = Self { data: data.into(), offsets, originally_compressed, originally_encrypted, dsprot_state };
 
         let build_info = arm9.build_info_mut()?;
@@ -765,19 +763,6 @@ impl<'a> Arm9<'a> {
         Ok(())
     }
 
-    /// Looks for DS Protect inside this ARM9 program.
-    ///
-    /// # Errors
-    ///
-    /// This function will return an error if the program is compressed.
-    pub fn dsprot_info(&self) -> Result<Option<DsProtInfo>, Arm9DsProtInfoError> {
-        if self.is_compressed()? {
-            arm9_ds_prot_info_error::CompressedSnafu.fail()
-        } else {
-            Ok(DsProtInfo::detect(&self.data))
-        }
-    }
-
     /// Decrypts all functions in this ARM9 program that were encrypted by DS Protect. Does nothing
     /// if [`Arm9::dsprot_state`] is [`DsProtState::Unencrypted`].
     ///
@@ -788,16 +773,29 @@ impl<'a> Arm9<'a> {
         &mut self,
         options: &DsProtDecryptOptions,
     ) -> Result<Option<&DsProtDecryptResult>, Arm9DsProtInfoError> {
-        let Some(dsprot_info) = self.dsprot_info()? else {
-            // DS Protect is not used
-            return Ok(None);
-        };
+        if self.dsprot_state.is_unencrypted() {
+            // Can't flatten this code due to conditional reference return (known borrow checker limitation)
+            if let DsProtState::Unencrypted(result) = &self.dsprot_state {
+                Ok(Some(result))
+            } else {
+                unreachable!();
+            }
+        } else {
+            let dsprot_info = if self.is_compressed()? {
+                return arm9_ds_prot_info_error::CompressedSnafu.fail();
+            } else if let Some(dsprot_info) = DsProtInfo::detect(&self.data) {
+                dsprot_info
+            } else {
+                // DS Protect is not used
+                return Ok(None);
+            };
 
-        let base_address = self.base_address();
-        let result = dsprot_info.decrypt(self.data.to_mut(), base_address, options)?;
-        self.dsprot_state = DsProtState::Unencrypted(result);
-        let DsProtState::Unencrypted(result) = &self.dsprot_state else { unreachable!() };
-        Ok(Some(result))
+            let base_address = self.base_address();
+            let result = dsprot_info.decrypt(self.data.to_mut(), base_address, options)?;
+            self.dsprot_state = DsProtState::Unencrypted(result);
+            let DsProtState::Unencrypted(result) = &self.dsprot_state else { unreachable!() };
+            Ok(Some(result))
+        }
     }
 
     /// Encrypts DS Protect functions in this ARM9 program. This can only be done if

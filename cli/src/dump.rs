@@ -564,19 +564,13 @@ impl DumpDsProt {
 
         let arm9 = rom.arm9_mut();
         if !self.yaml {
-            if let Some(dsprot_info) = arm9.dsprot_info()? {
-                println!("DS Protect found in ARM9 main:\n{}", dsprot_info.display(2));
-                if let Some(details) = arm9.decrypt_dsprot(&options)? {
-                    println!("Result from decryption:\n{}", details.display(2));
-                }
+            if let Some(dsprot_result) = arm9.dsprot_state().as_option() {
+                println!("DS Protect found in ARM9 main:\n{}", dsprot_result.display(2));
             }
 
             for overlay in rom.arm9_overlays_mut() {
-                if let Some(dsprot_info) = overlay.dsprot_info()? {
-                    println!("DS Protect found in ARM9 overlay {}:\n{}", overlay.id(), dsprot_info.display(2));
-                    if let Some(details) = overlay.decrypt_dsprot(&options)? {
-                        println!("Result from decryption:\n{}", details.display(2));
-                    }
+                if let Some(dsprot_result) = overlay.dsprot_state().as_option() {
+                    println!("DS Protect found in ARM9 overlay {}:\n{}", overlay.id(), dsprot_result.display(2));
                 }
             }
         } else {

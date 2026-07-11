@@ -22,7 +22,7 @@ use crate::{
     compress::lz77::Lz77DecompressError,
     crypto::{
         blowfish::BlowfishKey,
-        dsprot::{DsProtDecryptOptions, DsProtDecryptResult, DsProtState},
+        dsprot::{DsProtDecryptOptions, DsProtEncryptOptions, DsProtState},
         hmac_sha1::{HmacSha1, HmacSha1FromBytesError},
     },
     io::{FileError, create_dir_all, create_file, create_file_and_dirs, open_file, read_file, read_to_string},
@@ -300,6 +300,18 @@ pub enum RomSaveError {
         /// Backtrace to the source of the error.
         backtrace: Backtrace,
     },
+    /// See [`Arm9DsProtInfoError`].
+    #[snafu(transparent)]
+    Arm9DsProtInfo {
+        /// Source error.
+        source: Arm9DsProtInfoError,
+    },
+    /// See [`OverlayDsProtError`].
+    #[snafu(transparent)]
+    OverlayDsProt {
+        /// Source error.
+        source: OverlayDsProtError,
+    },
 }
 
 /// Config file for the ARM9 main module.
@@ -316,7 +328,8 @@ pub struct Arm9BuildConfig {
     #[serde(flatten)]
     pub build_info: BuildInfo,
     /// Information about DS Protect.
-    pub dsprot: Option<DsProtDecryptResult>,
+    #[serde(default, skip_serializing_if = "DsProtState::is_none")]
+    pub dsprot_state: DsProtState,
 }
 
 /// Overlay configuration, extending [`OverlayInfo`] with more fields.
@@ -330,8 +343,8 @@ pub struct OverlayConfig {
     /// Name of binary file.
     pub file_name: String,
     /// Stores information about DS Protect functions that were decrypted in this overlay.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub dsprot: Option<DsProtDecryptResult>,
+    #[serde(default, skip_serializing_if = "DsProtState::is_none")]
+    pub dsprot: DsProtState,
 }
 
 /// Configuration for the overlay table, used for both ARM9 and ARM7 overlays.
@@ -414,10 +427,14 @@ impl<'a> Rom<'a> {
         let mut arm9 = Arm9::with_autoloads(arm9, &autoloads, arm9_build_config.offsets, Arm9WithTcmsOptions {
             originally_compressed: arm9_build_config.compressed,
             originally_encrypted: arm9_build_config.encrypted,
-            dsprot: arm9_build_config.dsprot,
+            dsprot_state: arm9_build_config.dsprot_state,
         })?;
         arm9_build_config.build_info.assign_to_raw(arm9.build_info_mut()?);
         arm9.update_overlay_signatures(&arm9_overlays)?;
+        if arm9.dsprot_state().is_unencrypted() && options.encrypt {
+            log::info!("Encrypting DS Protect in ARM9 program");
+            arm9.encrypt_dsprot(&DsProtEncryptOptions::default())?;
+        }
         if arm9_build_config.compressed && options.compress {
             log::info!("Compressing ARM9 program");
             arm9.compress()?;
@@ -505,8 +522,13 @@ impl<'a> Rom<'a> {
                 info: config.info,
                 originally_compressed: compressed,
                 originally_signed: config.signed,
-                dsprot: config.dsprot,
+                dsprot_state: config.dsprot,
             })?;
+
+            if overlay.dsprot_state().is_unencrypted() && options.encrypt {
+                log::info!("Encrypting DS Protect in {processor} overlay {}", overlay.id());
+                overlay.encrypt_dsprot(&DsProtEncryptOptions::default())?;
+            }
 
             if options.compress {
                 if compressed {
@@ -572,6 +594,10 @@ impl<'a> Rom<'a> {
         if plain_arm9.is_compressed()? {
             log::info!("Decompressing ARM9 program");
             plain_arm9.decompress()?;
+        }
+        if plain_arm9.dsprot_state().is_encrypted() {
+            log::info!("Decrypting DS Protect in ARM9 program");
+            plain_arm9.decrypt_dsprot(&DsProtDecryptOptions::default())?;
         }
         create_file_and_dirs(path.join(&self.config.arm9_bin))?.write_all(plain_arm9.code()?)?;
 
@@ -665,7 +691,7 @@ impl<'a> Rom<'a> {
             encrypted: self.arm9.is_encrypted(),
             compressed: self.arm9.is_compressed()?,
             build_info: (*self.arm9.build_info()?).into(),
-            dsprot: self.arm9.dsprot_state().as_option().cloned(),
+            dsprot_state: self.arm9.dsprot_state().clone(),
         })
     }
 
@@ -680,17 +706,22 @@ impl<'a> Rom<'a> {
                 let name = format!("ov{:03}", overlay.id());
 
                 let mut plain_overlay = overlay.clone();
-                configs.push(OverlayConfig {
-                    info: plain_overlay.info().clone(),
-                    file_name: format!("{name}.bin"),
-                    signed: overlay.is_signed(),
-                    dsprot: overlay.dsprot_state().as_option().cloned(),
-                });
-
                 if plain_overlay.is_compressed() {
                     log::info!("Decompressing {processor} overlay {}/{}", overlay.id(), overlays.len() - 1);
                     plain_overlay.decompress()?;
                 }
+                if plain_overlay.dsprot_state().is_encrypted() {
+                    log::info!("Decrypting DS Protect in {processor} overlay {}", overlay.id());
+                    plain_overlay.decrypt_dsprot(&DsProtDecryptOptions { decode_relocations: false })?;
+                }
+
+                configs.push(OverlayConfig {
+                    info: overlay.info().clone(),
+                    file_name: format!("{name}.bin"),
+                    signed: plain_overlay.is_signed(),
+                    dsprot: plain_overlay.dsprot_state().clone(),
+                });
+
                 create_file(overlays_path.join(format!("{name}.bin")))?.write_all(plain_overlay.code())?;
             }
 
@@ -751,10 +782,7 @@ impl<'a> Rom<'a> {
 
         let alignment = rom.alignments()?;
 
-        // Decrypt DS Protect functions in ARM9 program and overlays. This stores a
-        // DsProtDecryptResult on those that were decrypted, which can be serialized to arm9.yaml
-        // or overlays.yaml.
-        let dsprot_options = DsProtDecryptOptions { decode_relocations: true };
+        let dsprot_options = DsProtDecryptOptions::default();
         if let Some(result) = decompressed_arm9.decrypt_dsprot(&dsprot_options)? {
             arm9.set_dsprot_state(DsProtState::Encrypted(result.clone()));
         }
@@ -1083,7 +1111,8 @@ pub struct RomLoadOptions<'a> {
     pub key: Option<&'a BlowfishKey>,
     /// If true (default), compress ARM9 and overlays if they are configured with `compressed: true`.
     pub compress: bool,
-    /// If true (default), encrypt ARM9 if it's configured with `encrypted: true`.
+    /// If true (default), encrypt ARM9 if it's configured with `encrypted: true`, and ARM9/overlays
+    /// if they contain DS Protect.
     pub encrypt: bool,
     /// If true (default), load asset files.
     pub load_files: bool,

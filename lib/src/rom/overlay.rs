@@ -37,8 +37,8 @@ pub struct OverlayOptions {
     pub originally_signed: bool,
     /// Overlay info.
     pub info: OverlayInfo,
-    /// DS Protect decryption info, used for re-encrypting DS Protect functions.
-    pub dsprot: Option<DsProtDecryptResult>,
+    /// Current state of DS Protect. Can be absent, encrypted or unencrypted.
+    pub dsprot_state: DsProtState,
 }
 
 /// Errors related to [`Overlay`].
@@ -82,7 +82,7 @@ pub enum OverlayError {
     },
 }
 
-/// Errors related to [`Overlay::dsprot_info`] and [`Overlay::decrypt_dsprot`].
+/// Errors related to [`Overlay::decrypt_dsprot`] and [`Overlay::encrypt_dsprot`].
 #[derive(Debug, Snafu)]
 #[snafu(module)]
 pub enum OverlayDsProtError {
@@ -103,10 +103,8 @@ pub enum OverlayDsProtError {
 impl<'a> Overlay<'a> {
     /// Creates a new [`Overlay`] from plain data.
     pub fn new<T: Into<Cow<'a, [u8]>>>(data: T, options: OverlayOptions) -> Result<Self, OverlayError> {
-        let OverlayOptions { originally_compressed, originally_signed, info, dsprot } = options;
+        let OverlayOptions { originally_compressed, originally_signed, info, dsprot_state } = options;
         let data = data.into();
-
-        let dsprot_state = if let Some(dsprot) = dsprot { DsProtState::Encrypted(dsprot) } else { DsProtState::None };
 
         Ok(Self { originally_compressed, originally_signed, info, signature: None, data, dsprot_state })
     }
@@ -329,15 +327,6 @@ impl<'a> Overlay<'a> {
         Ok(())
     }
 
-    /// Looks for DS Protect inside this overlay.
-    ///
-    /// # Errors
-    ///
-    /// This function will return an error if the overlay is compressed.
-    pub fn dsprot_info(&self) -> Result<Option<DsProtInfo>, OverlayDsProtError> {
-        if self.is_compressed() { overlay_ds_prot_error::CompressedSnafu.fail() } else { Ok(DsProtInfo::detect(&self.data)) }
-    }
-
     /// Decrypts all functions in this overlay that were encrypted by DS Protect. Does nothing if
     /// [`Overlay::dsprot_state`] is [`DsProtState::Unencrypted`].
     ///
@@ -348,16 +337,29 @@ impl<'a> Overlay<'a> {
         &mut self,
         options: &DsProtDecryptOptions,
     ) -> Result<Option<&DsProtDecryptResult>, OverlayDsProtError> {
-        let Some(dsprot_info) = self.dsprot_info()? else {
-            // DS Protect is not used
-            return Ok(None);
-        };
+        if self.dsprot_state.is_unencrypted() {
+            // Can't flatten this code due to conditional reference return (known borrow checker limitation)
+            if let DsProtState::Unencrypted(result) = &self.dsprot_state {
+                Ok(Some(result))
+            } else {
+                unreachable!();
+            }
+        } else {
+            let dsprot_info = if self.is_compressed() {
+                return overlay_ds_prot_error::CompressedSnafu.fail();
+            } else if let Some(dsprot_info) = DsProtInfo::detect(&self.data) {
+                dsprot_info
+            } else {
+                // DS Protect is not used
+                return Ok(None);
+            };
 
-        let base_address = self.base_address();
-        let result = dsprot_info.decrypt(self.data.to_mut(), base_address, options)?;
-        self.dsprot_state = DsProtState::Unencrypted(result);
-        let DsProtState::Unencrypted(result) = &self.dsprot_state else { unreachable!() };
-        Ok(Some(result))
+            let base_address = self.base_address();
+            let result = dsprot_info.decrypt(self.data.to_mut(), base_address, options)?;
+            self.dsprot_state = DsProtState::Unencrypted(result);
+            let DsProtState::Unencrypted(result) = &self.dsprot_state else { unreachable!() };
+            Ok(Some(result))
+        }
     }
 
     /// Encrypts DS Protect functions in this overlay. This can only be done if
