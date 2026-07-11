@@ -695,15 +695,18 @@ trait DsProtAlgo {
                 return DecoderOverwriteAddressNotFoundSnafu { decoder_address: address - fn_offset }.fail();
             }
 
+            let length = (table_end_address - pool_address) / 8;
+            let has_garbage = garbage_address.is_some();
+            let has_overwrite = overwrite_address.is_some();
+
             function_tables.push(DsProtFunction {
                 address: address - fn_offset,
                 size: pool_offset + fn_offset,
+                // has_overwrite is 8 bytes because 4 bytes for overwrite address and 4 bytes for
+                // return instruction literal (0xe12fff1e <bx lr>)
+                pool_size: Some(length * 8 + has_garbage as u32 * 4 + has_overwrite as u32 * 8),
                 encryption: EncryptionType::None,
-                function_table: Some(FunctionTable {
-                    length: (table_end_address - pool_address) / 8,
-                    has_garbage: garbage_address.is_some(),
-                    has_overwrite: overwrite_address.is_some(),
-                }),
+                function_table: Some(FunctionTable { length, has_garbage, has_overwrite }),
             });
         }
 
@@ -792,6 +795,7 @@ trait DsProtAlgo {
                         addend: reference_offset,
                     });
                 }
+                function.pool_size = Some(0x14 + has_garbage as u32 * 4);
 
                 log::debug!(
                     "Found decryption wrapper (type 1) at {:#010x} which targets {:#010x}",
@@ -801,6 +805,7 @@ trait DsProtAlgo {
                 decryption_wrappers.push(DsProtFunction {
                     address: dest_func_address,
                     size: dest_func_size,
+                    pool_size: None,
                     encryption: EncryptionType::Keyed(seed_key),
                     function_table: None,
                 });
@@ -852,6 +857,7 @@ trait DsProtAlgo {
                         addend: reference_offset,
                     });
                 }
+                function.pool_size = Some(0x18 + has_garbage as u32 * 4);
 
                 log::debug!(
                     "Found decryption wrapper (type 2) at {:#010x} which targets {:#010x}",
@@ -861,6 +867,7 @@ trait DsProtAlgo {
                 decryption_wrappers.push(DsProtFunction {
                     address: dest_func_address,
                     size: dest_func_size,
+                    pool_size: None,
                     encryption: EncryptionType::Keyed(seed_key),
                     function_table: None,
                 });
@@ -915,6 +922,7 @@ trait DsProtAlgo {
                         addend: reference_offset,
                     });
                 }
+                function.pool_size = Some(0x18 + has_garbage as u32 * 4);
 
                 let seed_key = self.precalculated_seed_key().unwrap();
 
@@ -930,6 +938,7 @@ trait DsProtAlgo {
                 decryption_wrappers.push(DsProtFunction {
                     address: dest_func_address,
                     size: dest_func_size,
+                    pool_size: None,
                     encryption: EncryptionType::Keyed(seed_key),
                     function_table: None,
                 });
@@ -1034,6 +1043,7 @@ trait DsProtAlgo {
                 functions.push(DsProtFunction {
                     address: func_address,
                     size: func_size,
+                    pool_size: None,
                     encryption: EncryptionType::Unkeyed,
                     function_table: None,
                 });
@@ -1998,9 +2008,9 @@ impl Display for DisplayDsProtDecryptResult<'_> {
         if !inner.functions.is_empty() {
             writeln!(f, "{i}Functions .................. :")?;
             for function in &inner.functions {
-                writeln!(f, "{i}  Address ..... : {:#010x}", function.address)?;
-                writeln!(f, "{i}  Size ........ : {:#x}", function.size)?;
-                write!(f, "{i}  Encryption .. : ")?;
+                writeln!(f, "{i}  Address ......... : {:#010x}", function.address)?;
+                writeln!(f, "{i}  Size ............ : {:#x}", function.size)?;
+                write!(f, "{i}  Encryption ...... : ")?;
                 match function.encryption {
                     EncryptionType::None => {
                         writeln!(f, "None")?;
@@ -2011,6 +2021,15 @@ impl Display for DisplayDsProtDecryptResult<'_> {
                     EncryptionType::Keyed(seed_key) => {
                         writeln!(f, "Keyed ({:#x})", seed_key)?;
                     }
+                }
+                write!(f, "{i}  Function table .. : ")?;
+                if let Some(function_table) = &function.function_table {
+                    writeln!(f)?;
+                    writeln!(f, "{i}    Length ......... : {}", function_table.length)?;
+                    writeln!(f, "{i}    Has garbage .... : {}", function_table.has_garbage)?;
+                    writeln!(f, "{i}    Has overwrite .. : {}", function_table.has_overwrite)?;
+                } else {
+                    writeln!(f, "None")?;
                 }
                 writeln!(f)?;
             }
@@ -2056,6 +2075,8 @@ pub struct DsProtFunction {
     pub address: u32,
     /// This function's size, excluding constant pool.
     pub size: u32,
+    /// The size in bytes of this function's constant pool, if known.
+    pub pool_size: Option<u32>,
     /// The type of encryption applied to this function.
     pub encryption: EncryptionType,
     /// If this function is a decoder which performs unkeyed decryption on a list of functions, then
