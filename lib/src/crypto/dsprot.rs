@@ -446,22 +446,21 @@ trait DsProtAlgo {
 
     fn decrypt(&self, words: &mut [u32], options: &AlgoDecryptOptions) -> Result<DsProtDecryptResult, DsProtError> {
         let dsprot_bss = self.find_bss_variable(words, options)?;
-        let function_tables = self.find_obfuscated_function_tables(options, words)?;
+        let mut functions = self.find_obfuscated_function_tables(options, words)?;
         let mut relocations = Vec::new();
         let mut unkeyed_encrypted_functions =
-            self.decode_function_tables(options, words, dsprot_bss, &function_tables, &mut relocations)?;
+            self.decode_function_tables(options, words, dsprot_bss, &functions, &mut relocations)?;
         let mut keyed_encrypted_functions =
             self.unkeyed_decrypt_functions(options, words, dsprot_bss, &mut unkeyed_encrypted_functions, &mut relocations)?;
         self.decrypt_wrappers(options, words, &mut keyed_encrypted_functions, &mut relocations)?;
 
-        relocations.sort_unstable_by_key(|r| r.address);
-        relocations.dedup_by_key(|r| r.address);
+        relocations.sort_unstable_by_key(|r| r.from_address);
+        relocations.dedup_by_key(|r| r.from_address);
 
         if options.decode_relocations {
             self.decode_relocations(options, words, &relocations)?;
         }
 
-        let mut functions: Vec<DsProtFunction> = function_tables.into_iter().map(|(func, _)| func).collect();
         functions.append(&mut unkeyed_encrypted_functions);
         functions.append(&mut keyed_encrypted_functions);
         functions.sort_unstable_by_key(|f| f.address);
@@ -541,16 +540,17 @@ trait DsProtAlgo {
         // Encode relocations
         if options.encode_relocations {
             for relocation in &decrypt_result.relocations {
-                let Some(relocated_value) = words.get_mut((relocation.address - options.base_address) as usize / 4) else {
+                let Some(relocated_value) = words.get_mut((relocation.from_address - options.base_address) as usize / 4)
+                else {
                     return OutOfBoundsSnafu {
                         what: "relocation",
-                        address: relocation.address,
+                        address: relocation.from_address,
                         base_address: options.base_address,
                         end_address: options.end_address,
                     }
                     .fail();
                 };
-                *relocated_value += relocation.offset;
+                *relocated_value += relocation.addend;
             }
         }
 
@@ -612,7 +612,7 @@ trait DsProtAlgo {
         &self,
         options: &AlgoDecryptOptions,
         words: &[u32],
-    ) -> Result<Vec<(DsProtFunction, FunctionTable)>, DsProtError> {
+    ) -> Result<Vec<DsProtFunction>, DsProtError> {
         let AlgoDecryptOptions { base_address, .. } = *options;
 
         let mut function_tables = Vec::new();
@@ -695,18 +695,16 @@ trait DsProtAlgo {
                 return DecoderOverwriteAddressNotFoundSnafu { decoder_address: address - fn_offset }.fail();
             }
 
-            function_tables.push((
-                DsProtFunction {
-                    address: address - fn_offset,
-                    size: pool_offset + fn_offset,
-                    encryption: EncryptionType::None,
-                },
-                FunctionTable {
+            function_tables.push(DsProtFunction {
+                address: address - fn_offset,
+                size: pool_offset + fn_offset,
+                encryption: EncryptionType::None,
+                function_table: Some(FunctionTable {
                     length: (table_end_address - pool_address) / 8,
-                    with_garbage: garbage_address.is_some(),
-                    with_overwrite: overwrite_address.is_some(),
-                },
-            ));
+                    has_garbage: garbage_address.is_some(),
+                    has_overwrite: overwrite_address.is_some(),
+                }),
+            });
         }
 
         Ok(function_tables)
@@ -764,21 +762,35 @@ trait DsProtAlgo {
                 let garbage_address = pool_words[4] - reference_offset;
 
                 // Check that this looks like a RAM address
-                let with_garbage = garbage_address >> 24 == 0x02;
+                let has_garbage = garbage_address >> 24 == 0x02;
 
                 // BSS + 1
-                relocations.push(DsProtRelocation { address: function_end_address, offset: 1 });
+                relocations.push(DsProtRelocation { from_address: function_end_address, to_address: dsprot_bss, addend: 1 });
                 // Destination function size
-                relocations
-                    .push(DsProtRelocation { address: function_end_address + 0x4, offset: dest_func_size + reference_offset });
+                relocations.push(DsProtRelocation {
+                    from_address: function_end_address + 0x4,
+                    to_address: dsprot_bss,
+                    addend: dest_func_size + reference_offset,
+                });
                 // Seed key
-                relocations
-                    .push(DsProtRelocation { address: function_end_address + 0x8, offset: seed_key + reference_offset });
+                relocations.push(DsProtRelocation {
+                    from_address: function_end_address + 0x8,
+                    to_address: dsprot_bss,
+                    addend: seed_key + reference_offset,
+                });
                 // Destination function address
-                relocations.push(DsProtRelocation { address: function_end_address + 0xc, offset: reference_offset });
-                if with_garbage {
+                relocations.push(DsProtRelocation {
+                    from_address: function_end_address + 0xc,
+                    to_address: dest_func_address,
+                    addend: reference_offset,
+                });
+                if has_garbage {
                     // Pointer to garbage code
-                    relocations.push(DsProtRelocation { address: function_end_address + 0x10, offset: reference_offset });
+                    relocations.push(DsProtRelocation {
+                        from_address: function_end_address + 0x10,
+                        to_address: garbage_address,
+                        addend: reference_offset,
+                    });
                 }
 
                 log::debug!(
@@ -790,6 +802,7 @@ trait DsProtAlgo {
                     address: dest_func_address,
                     size: dest_func_size,
                     encryption: EncryptionType::Keyed(seed_key),
+                    function_table: None,
                 });
             } else if func_words.len() >= 4 && func_words[0..4] == DECRYPTION_WRAPPER_SIGNATURE_2 {
                 let pool_words = get_constant_pool(base_address, end_address, words, function.address, function.size, 7)?;
@@ -799,26 +812,45 @@ trait DsProtAlgo {
                 let seed_key = pool_words[1] - dsprot_bss - reference_offset;
                 let dest_func_address = pool_words[2] - reference_offset;
                 let dest_func_size = pool_words[3] - dsprot_bss - reference_offset;
+                let wrapper_fragment = pool_words[5] - reference_offset;
                 let garbage_address = pool_words[6] - reference_offset;
 
                 // Check that this looks like a RAM address
-                let with_garbage = garbage_address >> 24 == 0x02;
+                let has_garbage = garbage_address >> 24 == 0x02;
 
                 // BSS + 1
-                relocations.push(DsProtRelocation { address: function_end_address, offset: 1 });
+                relocations.push(DsProtRelocation { from_address: function_end_address, to_address: dsprot_bss, addend: 1 });
                 // Seed key
-                relocations
-                    .push(DsProtRelocation { address: function_end_address + 0x4, offset: seed_key + reference_offset });
+                relocations.push(DsProtRelocation {
+                    from_address: function_end_address + 0x4,
+                    to_address: dsprot_bss,
+                    addend: seed_key + reference_offset,
+                });
                 // Destination function address
-                relocations.push(DsProtRelocation { address: function_end_address + 0x8, offset: reference_offset });
+                relocations.push(DsProtRelocation {
+                    from_address: function_end_address + 0x8,
+                    to_address: dest_func_address,
+                    addend: reference_offset,
+                });
                 // Destination function size
-                relocations
-                    .push(DsProtRelocation { address: function_end_address + 0xc, offset: dest_func_size + reference_offset });
+                relocations.push(DsProtRelocation {
+                    from_address: function_end_address + 0xc,
+                    to_address: dsprot_bss,
+                    addend: dest_func_size + reference_offset,
+                });
                 // Decryption wrapper fragment address
-                relocations.push(DsProtRelocation { address: function_end_address + 0x14, offset: reference_offset });
-                if with_garbage {
+                relocations.push(DsProtRelocation {
+                    from_address: function_end_address + 0x14,
+                    to_address: wrapper_fragment,
+                    addend: reference_offset,
+                });
+                if has_garbage {
                     // Pointer to garbage code
-                    relocations.push(DsProtRelocation { address: function_end_address + 0x18, offset: reference_offset });
+                    relocations.push(DsProtRelocation {
+                        from_address: function_end_address + 0x18,
+                        to_address: garbage_address,
+                        addend: reference_offset,
+                    });
                 }
 
                 log::debug!(
@@ -830,6 +862,7 @@ trait DsProtAlgo {
                     address: dest_func_address,
                     size: dest_func_size,
                     encryption: EncryptionType::Keyed(seed_key),
+                    function_table: None,
                 });
             } else if func_words.len() >= 4
                 && (func_words[0..4] == DECRYPTION_WRAPPER_SIGNATURE_3 || func_words[0..4] == DECRYPTION_WRAPPER_SIGNATURE_4)
@@ -846,23 +879,41 @@ trait DsProtAlgo {
                 let wrapper_fragment_size = pool_words[5] >> 26;
 
                 // Check that this looks like a RAM address
-                let with_garbage = garbage_address >> 24 == 0x02;
+                let has_garbage = garbage_address >> 24 == 0x02;
 
                 // BSS + 1
-                relocations.push(DsProtRelocation { address: function_end_address, offset: 1 });
+                relocations.push(DsProtRelocation { from_address: function_end_address, to_address: dsprot_bss, addend: 1 });
                 // Seed key placeholder (BSS + 3 initially)
-                relocations.push(DsProtRelocation { address: function_end_address + 0x4, offset: 3 });
+                relocations.push(DsProtRelocation {
+                    from_address: function_end_address + 0x4,
+                    to_address: dsprot_bss,
+                    addend: 3,
+                });
                 // Destination function address
-                relocations.push(DsProtRelocation { address: function_end_address + 0x8, offset: reference_offset });
+                relocations.push(DsProtRelocation {
+                    from_address: function_end_address + 0x8,
+                    to_address: dest_func_address,
+                    addend: reference_offset,
+                });
                 // Destination function size
-                relocations
-                    .push(DsProtRelocation { address: function_end_address + 0xc, offset: dest_func_size + reference_offset });
+                relocations.push(DsProtRelocation {
+                    from_address: function_end_address + 0xc,
+                    to_address: dsprot_bss,
+                    addend: dest_func_size + reference_offset,
+                });
                 // Decryption wrapper fragment address
-                relocations
-                    .push(DsProtRelocation { address: function_end_address + 0x14, offset: pool_words[5] & 0xfc000000 });
-                if with_garbage {
+                relocations.push(DsProtRelocation {
+                    from_address: function_end_address + 0x14,
+                    to_address: wrapper_fragment,
+                    addend: pool_words[5] & 0xfc000000,
+                });
+                if has_garbage {
                     // Pointer to garbage code
-                    relocations.push(DsProtRelocation { address: function_end_address + 0x18, offset: reference_offset });
+                    relocations.push(DsProtRelocation {
+                        from_address: function_end_address + 0x18,
+                        to_address: garbage_address,
+                        addend: reference_offset,
+                    });
                 }
 
                 let seed_key = self.precalculated_seed_key().unwrap();
@@ -880,38 +931,40 @@ trait DsProtAlgo {
                     address: dest_func_address,
                     size: dest_func_size,
                     encryption: EncryptionType::Keyed(seed_key),
+                    function_table: None,
                 });
-            } else if func_words[0..4] == [0xe92d4070, 0xe24dd010, 0xe59f40ac, 0xe59fc0ac] {
+            } else if func_words.len() >= 4 && func_words[0..4] == [0xe92d4070, 0xe24dd010, 0xe59f40ac, 0xe59fc0ac] {
                 // Decryption proxy
                 let pool_words = get_constant_pool(base_address, end_address, words, function.address, function.size, 2)?;
-                relocations.push(DsProtRelocation { address: pool_words[1], offset: reference_offset });
+                relocations.push(proxy_relocation(pool_words[1], words, base_address, end_address, reference_offset)?);
                 log::debug!("Decrypted decryption proxy function");
-            } else if func_words[0..4] == [0xe92d41f0, 0xe24dd010, 0xe1a05000, 0xe59f00c0] {
+            } else if func_words.len() >= 4 && func_words[0..4] == [0xe92d41f0, 0xe24dd010, 0xe1a05000, 0xe59f00c0] {
                 // Encryption proxy
                 let pool_words = get_constant_pool(base_address, end_address, words, function.address, function.size, 1)?;
-                relocations.push(DsProtRelocation { address: pool_words[0], offset: reference_offset });
+                relocations.push(proxy_relocation(pool_words[0], words, base_address, end_address, reference_offset)?);
                 log::debug!("Decrypted encryption proxy function");
-            } else if func_words[0..4] == [0xe92d000f, 0xe58ca010, 0xe1a0a00c, 0xe59fc054] {
+            } else if func_words.len() >= 4 && func_words[0..4] == [0xe92d000f, 0xe58ca010, 0xe1a0a00c, 0xe59fc054] {
                 // Decryption wrapper proxy
                 let pool_words = get_constant_pool(base_address, end_address, words, function.address, function.size, 2)?;
-                relocations.push(DsProtRelocation { address: pool_words[0], offset: reference_offset });
-                relocations.push(DsProtRelocation { address: pool_words[1], offset: reference_offset });
+                relocations.push(proxy_relocation(pool_words[0], words, base_address, end_address, reference_offset)?);
+                relocations.push(proxy_relocation(pool_words[1], words, base_address, end_address, reference_offset)?);
                 log::debug!("Decrypted decryption wrapper proxy function");
-            } else if func_words[0..4] == [0xe92d4ff8, 0xe24dd008, 0xe1a0b003, 0xe1a0a000]
-                || func_words[0..4] == [0xe92d4ff8, 0xe24dd010, 0xe1a0a000, 0xe1a00003]
+            } else if func_words.len() >= 4
+                && (func_words[0..4] == [0xe92d4ff8, 0xe24dd008, 0xe1a0b003, 0xe1a0a000]
+                    || func_words[0..4] == [0xe92d4ff8, 0xe24dd010, 0xe1a0a000, 0xe1a00003])
             {
                 // RC4 encryptor/decryptor
                 let pool_words = get_constant_pool(base_address, end_address, words, function.address, function.size, 1)?;
-                relocations.push(DsProtRelocation { address: pool_words[0], offset: reference_offset });
-                relocations.push(DsProtRelocation { address: pool_words[0] + 0xc, offset: reference_offset });
+                relocations.push(proxy_relocation(pool_words[0], words, base_address, end_address, reference_offset)?);
+                relocations.push(proxy_relocation(pool_words[0] + 0xc, words, base_address, end_address, reference_offset)?);
                 log::debug!("Found RC4 encryptor/decryptor");
-            } else if func_words[0..4] == [0xe92d43f0, 0xe24ddf43, 0xe59f7064, 0xe28d8000] {
+            } else if func_words.len() >= 4 && func_words[0..4] == [0xe92d43f0, 0xe24ddf43, 0xe59f7064, 0xe28d8000] {
                 // RC4 encrypt/decrypt function
                 let pool_words = get_constant_pool(base_address, end_address, words, function.address, function.size, 1)?;
-                relocations.push(DsProtRelocation { address: pool_words[0], offset: reference_offset });
-                relocations.push(DsProtRelocation { address: pool_words[0] + 0x4, offset: reference_offset });
-                relocations.push(DsProtRelocation { address: pool_words[0] + 0x8, offset: reference_offset });
-                relocations.push(DsProtRelocation { address: pool_words[0] + 0x10, offset: reference_offset });
+                relocations.push(proxy_relocation(pool_words[0], words, base_address, end_address, reference_offset)?);
+                relocations.push(proxy_relocation(pool_words[0] + 0x4, words, base_address, end_address, reference_offset)?);
+                relocations.push(proxy_relocation(pool_words[0] + 0x8, words, base_address, end_address, reference_offset)?);
+                relocations.push(proxy_relocation(pool_words[0] + 0x10, words, base_address, end_address, reference_offset)?);
                 log::debug!("Found RC4 encrypt/decrypt function");
             }
         }
@@ -923,17 +976,18 @@ trait DsProtAlgo {
         options: &AlgoDecryptOptions,
         words: &mut [u32],
         dsprot_bss: u32,
-        function_tables: &[(DsProtFunction, FunctionTable)],
+        function_tables: &[DsProtFunction],
         relocations: &mut Vec<DsProtRelocation>,
     ) -> Result<Vec<DsProtFunction>, DsProtError> {
         let AlgoDecryptOptions { base_address, end_address, .. } = *options;
 
         let mut functions = Vec::new();
-        for (function, function_table) in function_tables {
-            let &DsProtFunction { address: func_address, size: func_size, encryption: _ } = function;
-            let &FunctionTable { length, with_garbage, with_overwrite } = function_table;
+        for function in function_tables {
+            let Some(FunctionTable { length, has_garbage, has_overwrite }) = function.function_table else {
+                continue;
+            };
 
-            let function_table_address = func_address + func_size;
+            let function_table_address = function.address + function.size;
 
             log::debug!("Obfuscated function table found at {:#010x}", function_table_address);
 
@@ -965,25 +1019,43 @@ trait DsProtAlgo {
                 log::debug!("Found unkeyed encrypted function at {:#010x}, size {:#x}", func_address, func_size);
 
                 // Function address
-                relocations
-                    .push(DsProtRelocation { address: function_table_address + i * 8, offset: self.reference_offset() });
+                relocations.push(DsProtRelocation {
+                    from_address: function_table_address + i * 8,
+                    to_address: func_address,
+                    addend: self.reference_offset(),
+                });
                 // Function size
                 relocations.push(DsProtRelocation {
-                    address: function_table_address + i * 8 + 4,
-                    offset: func_size + self.reference_offset(),
+                    from_address: function_table_address + i * 8 + 4,
+                    to_address: dsprot_bss,
+                    addend: func_size + self.reference_offset(),
                 });
 
-                functions.push(DsProtFunction { address: func_address, size: func_size, encryption: EncryptionType::Unkeyed });
+                functions.push(DsProtFunction {
+                    address: func_address,
+                    size: func_size,
+                    encryption: EncryptionType::Unkeyed,
+                    function_table: None,
+                });
             }
 
             let mut current_address = function_table_address + length * 8;
-            if with_garbage {
-                relocations.push(DsProtRelocation { address: current_address, offset: self.reference_offset() });
+            if has_garbage && let Some(pool_word) = pool_iter.next() {
+                let garbage_address = pool_word - self.reference_offset();
+                relocations.push(DsProtRelocation {
+                    from_address: current_address,
+                    to_address: garbage_address,
+                    addend: self.reference_offset(),
+                });
                 current_address += 4;
             }
-            if with_overwrite {
-                relocations.push(DsProtRelocation { address: current_address, offset: self.reference_offset() });
-                // current_address += 4;
+            if has_overwrite && let Some(pool_word) = pool_iter.next() {
+                let overwrite_address = pool_word - self.reference_offset();
+                relocations.push(DsProtRelocation {
+                    from_address: current_address,
+                    to_address: overwrite_address,
+                    addend: self.reference_offset(),
+                });
             }
         }
         Ok(functions)
@@ -1038,6 +1110,16 @@ trait DsProtAlgo {
             let limit = func_start.len().min(func_words.len());
             func_start[0..limit].copy_from_slice(&func_words[0..limit]);
 
+            let Some(pool_words) = words.get(func_end_offset..) else {
+                return OutOfBoundsSnafu {
+                    what: "encrypted function constant pool",
+                    address: function.address + function.size,
+                    base_address,
+                    end_address,
+                }
+                .fail();
+            };
+
             let reference_offset = self.reference_offset();
 
             if func_start[0..4] == [0xe92d4ff8, 0xe24dd080, 0xe59f209c, 0xe59f109c]
@@ -1047,54 +1129,114 @@ trait DsProtAlgo {
             {
                 log::debug!("Decrypted flashcart/emulator detector (type 1)");
 
-                // Test function address
-                relocations.push(DsProtRelocation { address: function_end_address, offset: reference_offset });
-                // Integrity function address
-                relocations.push(DsProtRelocation { address: function_end_address + 0x4, offset: reference_offset });
+                let test_fn_addr = pool_words[0] - reference_offset;
+                relocations.push(DsProtRelocation {
+                    from_address: function_end_address,
+                    to_address: test_fn_addr,
+                    addend: reference_offset,
+                });
+
+                let integrity_fn_addr = pool_words[1] - reference_offset;
+                relocations.push(DsProtRelocation {
+                    from_address: function_end_address + 0x4,
+                    to_address: integrity_fn_addr,
+                    addend: reference_offset,
+                });
             } else if func_start[0..4] == [0xe92d4ff8, 0xe24dd098, 0xe59f2170, 0xe59f4170]
                 || func_start[0..4] == [0xe92d4ff8, 0xe24dd098, 0xe59f2174, 0xe59f4174]
             {
                 log::debug!("Decrypted flashcart/emulator detector (type 2)");
 
-                // Callback index address
-                relocations.push(DsProtRelocation { address: function_end_address, offset: reference_offset });
-                // Callback table address
-                relocations.push(DsProtRelocation { address: function_end_address + 0x4, offset: reference_offset });
-                // Test function address
-                relocations.push(DsProtRelocation { address: function_end_address + 0x8, offset: reference_offset });
-                // Integrity function address
-                relocations.push(DsProtRelocation { address: function_end_address + 0xc, offset: reference_offset });
+                let callback_index_addr = pool_words[0] - reference_offset;
+                relocations.push(DsProtRelocation {
+                    from_address: function_end_address,
+                    to_address: callback_index_addr,
+                    addend: reference_offset,
+                });
+
+                let callback_table_addr = pool_words[1] - reference_offset;
+                relocations.push(DsProtRelocation {
+                    from_address: function_end_address + 0x4,
+                    to_address: callback_table_addr,
+                    addend: reference_offset,
+                });
+
+                let test_fn_addr = pool_words[2] - reference_offset;
+                relocations.push(DsProtRelocation {
+                    from_address: function_end_address + 0x8,
+                    to_address: test_fn_addr,
+                    addend: reference_offset,
+                });
+
+                let integrity_fn_addr = pool_words[3] - reference_offset;
+                relocations.push(DsProtRelocation {
+                    from_address: function_end_address + 0xc,
+                    to_address: integrity_fn_addr,
+                    addend: reference_offset,
+                });
             } else if func_start[0..4] == [0xe92d41f0, 0xe24dd080, 0xe59f3070, 0xe3a02000]
                 || func_start[0..4] == [0xe92d41f0, 0xe24dd080, 0xe59f3074, 0xe3a02000]
                 || func_start[0..4] == [0xe92d41f0, 0xe24dd080, 0xe59f3080, 0xe3a02000]
             {
                 log::debug!("Decrypted dummy detector");
 
-                // Test function address
-                relocations.push(DsProtRelocation { address: function_end_address, offset: reference_offset });
+                let test_fn_addr = pool_words[0] - reference_offset;
+                relocations.push(DsProtRelocation {
+                    from_address: function_end_address,
+                    to_address: test_fn_addr,
+                    addend: reference_offset,
+                });
             } else if func_start[0..4] == [0xe92d4ff8, 0xe24dd018, 0xe59fa100, 0xe59f6100] {
                 log::debug!("Decrypted MAC and ROM integrity checkers");
 
-                // MAC integrity function address
-                relocations.push(DsProtRelocation { address: function_end_address, offset: reference_offset });
-                // MAC test function address
-                relocations.push(DsProtRelocation { address: function_end_address + 0x4, offset: reference_offset });
-                // ROM integrity function address
-                relocations.push(DsProtRelocation { address: function_end_address + 0x8, offset: reference_offset });
-                // ROM test function address
-                relocations.push(DsProtRelocation { address: function_end_address + 0xc, offset: reference_offset });
+                let mac_integrity_fn_addr = pool_words[0] - reference_offset;
+                relocations.push(DsProtRelocation {
+                    from_address: function_end_address,
+                    to_address: mac_integrity_fn_addr,
+                    addend: reference_offset,
+                });
+                let mac_test_fn_addr = pool_words[1] - reference_offset;
+                relocations.push(DsProtRelocation {
+                    from_address: function_end_address + 0x4,
+                    to_address: mac_test_fn_addr,
+                    addend: reference_offset,
+                });
+                let rom_integrity_fn_addr = pool_words[2] - reference_offset;
+                relocations.push(DsProtRelocation {
+                    from_address: function_end_address + 0x8,
+                    to_address: rom_integrity_fn_addr,
+                    addend: reference_offset,
+                });
+                let rom_test_fn_addr = pool_words[3] - reference_offset;
+                relocations.push(DsProtRelocation {
+                    from_address: function_end_address + 0xc,
+                    to_address: rom_test_fn_addr,
+                    addend: reference_offset,
+                });
             } else if func_start[6] == 0x112fff1e {
-                log::debug!("Decrypted integrity checker");
+                let checked_fn_addr = pool_words[0] - self.integrity_check_offset();
+                log::debug!("Decrypted integrity checker for {:#010x}", checked_fn_addr);
 
-                // Checked function address
-                relocations.push(DsProtRelocation { address: function_end_address, offset: self.integrity_check_offset() });
+                relocations.push(DsProtRelocation {
+                    from_address: function_end_address,
+                    to_address: checked_fn_addr,
+                    addend: self.integrity_check_offset(),
+                });
             } else if func_start[0..4] == [0xe1a0a00f, 0xe19aa00a, 0x102ee00e, 0xe25aa008] {
                 log::debug!("Decrypted crash function");
 
-                // Clear function address
-                relocations.push(DsProtRelocation { address: function_end_address, offset: reference_offset });
-                // Termination function address
-                relocations.push(DsProtRelocation { address: function_end_address + 0x4, offset: reference_offset });
+                let clear_fn_addr = pool_words[0] - reference_offset;
+                relocations.push(DsProtRelocation {
+                    from_address: function_end_address,
+                    to_address: clear_fn_addr,
+                    addend: reference_offset,
+                });
+                let terminate_fn_addr = pool_words[1] - reference_offset;
+                relocations.push(DsProtRelocation {
+                    from_address: function_end_address + 0x4,
+                    to_address: terminate_fn_addr,
+                    addend: reference_offset,
+                });
             }
             // The other function types don't have any encrypted constant pools
         }
@@ -1109,10 +1251,11 @@ trait DsProtAlgo {
     ) -> Result<(), DsProtError> {
         let &AlgoDecryptOptions { base_address, end_address, .. } = options;
         for relocation in relocations.iter() {
-            let Some(relocated_value) = words.get_mut((relocation.address - base_address) as usize / 4) else {
-                return OutOfBoundsSnafu { what: "relocation", address: relocation.address, base_address, end_address }.fail();
+            let Some(relocated_value) = words.get_mut((relocation.from_address - base_address) as usize / 4) else {
+                return OutOfBoundsSnafu { what: "relocation", address: relocation.from_address, base_address, end_address }
+                    .fail();
             };
-            *relocated_value -= relocation.offset;
+            *relocated_value -= relocation.addend;
         }
         Ok(())
     }
@@ -1139,6 +1282,21 @@ fn get_constant_pool(
         .fail();
     };
     Ok(pool_words)
+}
+
+fn proxy_relocation(
+    proxy_ptr_address: u32,
+    words: &[u32],
+    base_address: u32,
+    end_address: u32,
+    reference_offset: u32,
+) -> Result<DsProtRelocation, DsProtError> {
+    let offset = (proxy_ptr_address - base_address) as usize / 4;
+    let Some(proxy_fn) = words.get(offset) else {
+        return OutOfBoundsSnafu { what: "proxy function pointer", address: proxy_ptr_address, base_address, end_address }
+            .fail();
+    };
+    Ok(DsProtRelocation { from_address: proxy_ptr_address, to_address: proxy_fn - reference_offset, addend: reference_offset })
 }
 
 fn encrypt_branch_1(reference_offset: u32, ins: u32) -> u32 {
@@ -1337,7 +1495,7 @@ impl DsProtAlgo for DsProtAlgoV2 {
     }
 
     fn integrity_check_offset(&self) -> u32 {
-        self.reference_offset * 2
+        self.reference_offset
     }
 
     fn unkeyed_encryption_xor(&self) -> u32 {
@@ -1860,8 +2018,8 @@ impl Display for DisplayDsProtDecryptResult<'_> {
         if !inner.relocations.is_empty() {
             writeln!(f, "{i}Relocations ................ :")?;
             for fn_ptr in &inner.relocations {
-                writeln!(f, "{i}  Address .. : {:#010x}", fn_ptr.address)?;
-                writeln!(f, "{i}  Offset ... : {:#x}\n", fn_ptr.offset)?;
+                writeln!(f, "{i}  Address .. : {:#010x}", fn_ptr.from_address)?;
+                writeln!(f, "{i}  Offset ... : {:#x}\n", fn_ptr.addend)?;
             }
         }
         Ok(())
@@ -1871,9 +2029,12 @@ impl Display for DisplayDsProtDecryptResult<'_> {
 /// Represents an address range of encrypted instructions.
 #[derive(Serialize, Deserialize, Clone, PartialEq, Eq, Debug)]
 pub struct EncryptedRange {
-    start_address: u32,
-    end_address: u32,
-    seed_key: u32,
+    /// Start of range, inclusive.
+    pub start_address: u32,
+    /// End of range, exclusive.
+    pub end_address: u32,
+    /// Seed key for RC4 keystream.
+    pub seed_key: u32,
 }
 
 impl EncryptedRange {
@@ -1891,26 +2052,15 @@ impl EncryptedRange {
 /// Contains information about a DS Protect function.
 #[derive(Serialize, Deserialize, Clone, PartialEq, Eq, Debug)]
 pub struct DsProtFunction {
-    address: u32,
-    size: u32,
-    encryption: EncryptionType,
-}
-
-impl DsProtFunction {
-    /// Returns the address of this [`DsProtFunction`].
-    pub fn address(&self) -> u32 {
-        self.address
-    }
-
-    /// Returns the size of this [`DsProtFunction`].
-    pub fn size(&self) -> u32 {
-        self.size
-    }
-
-    /// Returns the [`EncryptionType`] of this [`DsProtFunction`].
-    pub fn encryption(&self) -> EncryptionType {
-        self.encryption
-    }
+    /// This function's address.
+    pub address: u32,
+    /// This function's size, excluding constant pool.
+    pub size: u32,
+    /// The type of encryption applied to this function.
+    pub encryption: EncryptionType,
+    /// If this function is a decoder which performs unkeyed decryption on a list of functions, then
+    /// `function_table` will be `Some`.
+    pub function_table: Option<FunctionTable>,
 }
 
 /// The type of encryption used on a [`DsProtFunction`].
@@ -1927,21 +2077,27 @@ pub enum EncryptionType {
     Keyed(u32),
 }
 
-struct FunctionTable {
+/// Represents the size of the function table in the constant pool of a decoder function.
+#[derive(Serialize, Deserialize, Clone, PartialEq, Eq, Debug)]
+pub struct FunctionTable {
     /// The number of (function address, function size) entries.
-    length: u32,
+    pub length: u32,
     /// If true, a pointer to DS Protect's garbage data was appended to the end of the constant pool.
-    with_garbage: bool,
+    pub has_garbage: bool,
     /// If true, a pointer to this decoder function was appended to the end of the constant pool.
-    with_overwrite: bool,
+    pub has_overwrite: bool,
 }
 
 /// Represents a pointer or constant in DS Protect's code which was encoded by adding an offset
 /// value to it.
 #[derive(PartialEq, Eq, Clone, Copy, Serialize, Deserialize, Debug)]
 pub struct DsProtRelocation {
-    address: u32,
-    offset: u32,
+    /// The location of the relocated value.
+    pub from_address: u32,
+    /// The resolved address.
+    pub to_address: u32,
+    /// Offset to add to the resolved address.
+    pub addend: u32,
 }
 
 /// Defines whether DS Protect is present in the ARM9 program or an ARM9 overlay, and whether it
