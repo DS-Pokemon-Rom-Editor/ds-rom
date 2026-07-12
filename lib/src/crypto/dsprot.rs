@@ -431,7 +431,6 @@ const DECRYPTION_WRAPPER_SIGNATURE_4: [u32; 4] = [0xe18fc00f, 0xe01cc00c, 0x03a0
 
 trait DsProtAlgo {
     fn reference_offset(&self) -> u32;
-    fn integrity_check_offset(&self) -> u32;
     fn unkeyed_encryption_xor(&self) -> u32;
     fn unkeyed_encrypt_instruction(&self, ins: u32, xor: u32) -> (u32, u32);
     fn unkeyed_decrypt_instruction(&self, ins: u32, xor: u32) -> (u32, u32);
@@ -795,7 +794,7 @@ trait DsProtAlgo {
                         addend: reference_offset,
                     });
                 }
-                function.pool_size = Some(0x14 + has_garbage as u32 * 4);
+                function.pool_size = Some(0x10 + has_garbage as u32 * 4);
 
                 log::debug!(
                     "Found decryption wrapper (type 1) at {:#010x} which targets {:#010x}",
@@ -1224,13 +1223,13 @@ trait DsProtAlgo {
                     addend: reference_offset,
                 });
             } else if func_start[6] == 0x112fff1e {
-                let checked_fn_addr = pool_words[0] - self.integrity_check_offset();
+                let checked_fn_addr = pool_words[0] - reference_offset;
                 log::debug!("Decrypted integrity checker for {:#010x}", checked_fn_addr);
 
                 relocations.push(DsProtRelocation {
                     from_address: function_end_address,
                     to_address: checked_fn_addr,
-                    addend: self.integrity_check_offset(),
+                    addend: reference_offset,
                 });
             } else if func_start[0..4] == [0xe1a0a00f, 0xe19aa00a, 0x102ee00e, 0xe25aa008] {
                 log::debug!("Decrypted crash function");
@@ -1420,10 +1419,6 @@ impl DsProtAlgo for DsProtAlgoV1 {
         0 // unused
     }
 
-    fn integrity_check_offset(&self) -> u32 {
-        0 // unused
-    }
-
     fn unkeyed_encryption_xor(&self) -> u32 {
         0 // unused
     }
@@ -1504,10 +1499,6 @@ impl DsProtAlgo for DsProtAlgoV2 {
         self.reference_offset
     }
 
-    fn integrity_check_offset(&self) -> u32 {
-        self.reference_offset
-    }
-
     fn unkeyed_encryption_xor(&self) -> u32 {
         self.unkeyed_encryption_xor
     }
@@ -1565,10 +1556,6 @@ impl DsProtAlgo for DsProtAlgoV2 {
 impl DsProtAlgo for DsProtAlgoV3 {
     fn reference_offset(&self) -> u32 {
         self.reference_offset
-    }
-
-    fn integrity_check_offset(&self) -> u32 {
-        self.reference_offset * 2
     }
 
     fn unkeyed_encryption_xor(&self) -> u32 {
@@ -1660,10 +1647,6 @@ impl DsProtAlgo for DsProtAlgoV3 {
 impl DsProtAlgo for DsProtAlgoV4 {
     fn reference_offset(&self) -> u32 {
         self.reference_offset
-    }
-
-    fn integrity_check_offset(&self) -> u32 {
-        self.reference_offset * 2
     }
 
     fn unkeyed_encryption_xor(&self) -> u32 {
@@ -1769,10 +1752,6 @@ impl DsProtAlgo for DsProtAlgoV5 {
         self.reference_offset
     }
 
-    fn integrity_check_offset(&self) -> u32 {
-        self.reference_offset
-    }
-
     fn unkeyed_encryption_xor(&self) -> u32 {
         self.unkeyed_encryption_xor
     }
@@ -1851,10 +1830,6 @@ impl DsProtAlgo for DsProtAlgoV5 {
 
 impl DsProtAlgo for DsProtAlgoV6 {
     fn reference_offset(&self) -> u32 {
-        self.reference_offset
-    }
-
-    fn integrity_check_offset(&self) -> u32 {
         self.reference_offset
     }
 
@@ -2129,8 +2104,10 @@ pub enum DsProtState {
     #[default]
     None,
     /// Present and unencrypted.
+    #[serde(rename = "unencrypted")]
     Unencrypted(DsProtDecryptResult),
     /// Present and encrypted.
+    #[serde(rename = "encrypted")]
     Encrypted(DsProtDecryptResult),
 }
 
