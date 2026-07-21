@@ -68,11 +68,7 @@ pub enum RawFntError {
 impl<'a> Fnt<'a> {
     fn check_size(data: &'_ [u8]) -> Result<(), RawFntError> {
         let size = size_of::<FntDirectory>();
-        if data.len() < size {
-            InvalidSizeSnafu {}.fail()
-        } else {
-            Ok(())
-        }
+        if data.len() < size { InvalidSizeSnafu {}.fail() } else { Ok(()) }
     }
 
     fn handle_pod_cast<T>(result: Result<T, PodCastError>) -> T {

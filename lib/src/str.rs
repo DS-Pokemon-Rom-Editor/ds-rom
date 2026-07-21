@@ -1,7 +1,7 @@
 use std::{fmt::Display, str::FromStr};
 
 use bytemuck::{Pod, Zeroable};
-use serde::{de, Deserialize, Serialize};
+use serde::{Deserialize, Serialize, de};
 use snafu::{Backtrace, Snafu};
 
 /// A fixed-size ASCII string.

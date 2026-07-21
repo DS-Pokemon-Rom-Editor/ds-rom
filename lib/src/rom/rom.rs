@@ -800,12 +800,24 @@ impl<'a> Rom<'a> {
             itcm: RomConfigAutoload { bin: "arm9/itcm.bin".into(), config: "arm9/itcm.yaml".into() },
             unknown_autoloads,
             dtcm: RomConfigAutoload { bin: "arm9/dtcm.bin".into(), config: "arm9/dtcm.yaml".into() },
-            arm9_overlays: if arm9_overlays.is_empty() { None } else { Some("arm9_overlays/overlays.yaml".into()) },
-            arm7_overlays: if arm7_overlays.is_empty() { None } else { Some("arm7_overlays/overlays.yaml".into()) },
+            arm9_overlays: if arm9_overlays.is_empty() {
+                None
+            } else {
+                Some("arm9_overlays/overlays.yaml".into())
+            },
+            arm7_overlays: if arm7_overlays.is_empty() {
+                None
+            } else {
+                Some("arm7_overlays/overlays.yaml".into())
+            },
             banner: "banner/banner.yaml".into(),
             files_dir: "files/".into(),
             path_order: "path_order.txt".into(),
-            multiboot_signature: if multiboot_signature.is_none() { None } else { Some("multiboot_signature.yaml".into()) },
+            multiboot_signature: if multiboot_signature.is_none() {
+                None
+            } else {
+                Some("multiboot_signature.yaml".into())
+            },
             arm9_hmac_sha1_key: has_arm9_hmac_sha1.then_some("arm9/hmac_sha1_key.bin".into()),
             alignment,
             padding,

@@ -1,7 +1,7 @@
 use std::fmt::Display;
 
 use bytemuck::{Pod, Zeroable};
-use serde::{de::Visitor, Deserialize, Serialize};
+use serde::{Deserialize, Serialize, de::Visitor};
 
 /// Represents an RSA signature.
 #[repr(C)]

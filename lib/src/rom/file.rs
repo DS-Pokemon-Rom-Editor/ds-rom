@@ -13,7 +13,7 @@ use snafu::{Backtrace, Snafu};
 
 use super::raw::{self, FileAlloc, Fnt, FntDirectory, FntFile, FntSubtable, RawHeaderError};
 use crate::{
-    io::{read_dir, read_file, FileError},
+    io::{FileError, read_dir, read_file},
     str::BlobSize,
 };
 
@@ -463,7 +463,11 @@ impl<'a> FileSystem<'a> {
         let mut max_id = 0;
         let parent = self.dir(parent_id);
         for child in &parent.children {
-            let id = if Self::is_dir(*child) { self.max_file_id_in(*child) } else { *child };
+            let id = if Self::is_dir(*child) {
+                self.max_file_id_in(*child)
+            } else {
+                *child
+            };
             if id > max_id {
                 max_id = id;
             }

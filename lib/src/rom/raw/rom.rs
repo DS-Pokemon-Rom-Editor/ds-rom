@@ -217,8 +217,11 @@ impl<'a> Rom<'a> {
         let end = start + header.arm7.size as usize;
         let data = &self.data[start..end];
 
-        let build_info_offset =
-            if header.arm7_build_info_offset == 0 { 0 } else { header.arm7_build_info_offset - header.arm7.offset };
+        let build_info_offset = if header.arm7_build_info_offset == 0 {
+            0
+        } else {
+            header.arm7_build_info_offset - header.arm7.offset
+        };
 
         Ok(Arm7::new(Cow::Borrowed(data), Arm7Offsets {
             base_address: header.arm7.base_addr,
@@ -430,7 +433,11 @@ impl<'a> Rom<'a> {
 
         // Get the alignment of the current section, by looking at the address of the next section.
         fn get_alignment(next_section: u32) -> u32 {
-            if next_section.trailing_zeros() >= 9 { 0x200 } else { DEFAULT_ALIGNMENT }
+            if next_section.trailing_zeros() >= 9 {
+                0x200
+            } else {
+                DEFAULT_ALIGNMENT
+            }
         }
 
         let fat = self.fat()?;

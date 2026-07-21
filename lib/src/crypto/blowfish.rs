@@ -7,7 +7,7 @@ use std::{
 use bytemuck::{Pod, Zeroable};
 use snafu::{Backtrace, Snafu};
 
-use crate::io::{open_file, FileError};
+use crate::io::{FileError, open_file};
 
 /// De/encrypts data using the [Blowfish](https://en.wikipedia.org/wiki/Blowfish_(cipher)) block cipher.
 #[repr(C)]

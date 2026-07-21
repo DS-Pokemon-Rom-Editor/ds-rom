@@ -8,8 +8,8 @@ use serde::{Deserialize, Serialize};
 use snafu::{Backtrace, Snafu};
 
 use super::{
-    raw::{self, BannerBitmap, BannerPalette, BannerVersion, Language},
     ImageSize,
+    raw::{self, BannerBitmap, BannerPalette, BannerVersion, Language},
 };
 use crate::{crc::CRC_16_MODBUS, str::Unicode16Array};
 
