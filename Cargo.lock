@@ -345,7 +345,7 @@ dependencies = [
 
 [[package]]
 name = "ds-rom"
-version = "0.7.1"
+version = "0.8.0"
 dependencies = [
  "anyhow",
  "bitfield-struct",
@@ -366,7 +366,7 @@ dependencies = [
 
 [[package]]
 name = "ds-rom-cli"
-version = "0.7.1"
+version = "0.8.0"
 dependencies = [
  "anyhow",
  "clap",
