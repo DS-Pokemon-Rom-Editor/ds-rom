@@ -6,7 +6,7 @@ use std::{
 use bytemuck::{Pod, PodCastError, Zeroable};
 use snafu::{Backtrace, Snafu};
 
-use super::{RawHeaderError, NITROCODE};
+use super::{NITROCODE, RawHeaderError};
 
 /// Build info for the ARM9 module. This is the raw version, see the plain one [here](super::super::BuildInfo).
 #[repr(C)]

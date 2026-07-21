@@ -4,30 +4,34 @@ use serde::{Deserialize, Serialize};
 use snafu::{Backtrace, Snafu};
 
 use super::{
-    raw::{
-        AutoloadInfo, AutoloadInfoEntry, AutoloadKind, BuildInfo, HmacSha1Signature, HmacSha1SignatureError,
-        RawAutoloadInfoError, RawBuildInfoError, NITROCODE_BYTES,
-    },
     Autoload, OverlayTable,
+    raw::{
+        AutoloadInfo, AutoloadInfoEntry, AutoloadKind, BuildInfo, HmacSha1Signature, HmacSha1SignatureError, NITROCODE_BYTES,
+        RawAutoloadInfoError, RawBuildInfoError,
+    },
 };
 use crate::{
     compress::lz77::{Lz77, Lz77DecompressError},
     crc::CRC_16_MODBUS,
-    crypto::blowfish::{Blowfish, BlowfishError, BlowfishKey, BlowfishLevel},
+    crypto::{
+        blowfish::{Blowfish, BlowfishError, BlowfishKey, BlowfishLevel},
+        dsprot::{DsProtDecryptOptions, DsProtDecryptResult, DsProtEncryptOptions, DsProtError, DsProtInfo, DsProtState},
+    },
     rom::LibraryEntry,
 };
 
 /// ARM9 program.
-#[derive(Clone)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct Arm9<'a> {
     data: Cow<'a, [u8]>,
     offsets: Arm9Offsets,
     originally_compressed: bool,
     originally_encrypted: bool,
+    dsprot_state: DsProtState,
 }
 
 /// Offsets in the ARM9 program.
-#[derive(Serialize, Deserialize, Clone, Copy)]
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq)]
 pub struct Arm9Offsets {
     /// Base address.
     pub base_address: u32,
@@ -43,6 +47,11 @@ pub struct Arm9Offsets {
 
 const SECURE_AREA_ID: [u8; 8] = [0xff, 0xde, 0xff, 0xe7, 0xff, 0xde, 0xff, 0xe7];
 const SECURE_AREA_ENCRY_OBJ: &[u8] = "encryObj".as_bytes();
+
+/// Number of zero-bytes in the secure area for it to be considered unencrypted. This applies to a
+/// few retail games with a secure area which, after decryption, does not start with "encryObj" like
+/// it normally does.
+const SECURE_AREA_UNENCRYPTED_THRESHOLD: usize = 256;
 
 const LZ77: Lz77 = Lz77 {};
 
@@ -66,12 +75,6 @@ pub enum Arm9Error {
     Blowfish {
         /// Source error.
         source: BlowfishError,
-    },
-    /// Occurs when the string "encryObj" is not found when de/encrypting the secure area.
-    #[snafu(display("invalid encryption, 'encryObj' not found"))]
-    NotEncryObj {
-        /// Backtrace to the source of the error.
-        backtrace: Backtrace,
     },
     /// See [`RawBuildInfoError`].
     #[snafu(transparent)]
@@ -164,28 +167,63 @@ pub enum Arm9HmacSha1KeyError {
     },
 }
 
+/// Errors related to [`Arm9::dsprot_info`].
+#[derive(Debug, Snafu)]
+#[snafu(module)]
+pub enum Arm9DsProtInfoError {
+    /// See [`RawBuildInfoError`].
+    #[snafu(transparent)]
+    RawBuildInfo {
+        /// Source error.
+        source: RawBuildInfoError,
+    },
+    /// Occurs when trying to detect DS Protect while the ARM9 program is compressed.
+    #[snafu(display("ARM9 program must be decompressed before detecting DS Protect:\n{backtrace}"))]
+    Compressed {
+        /// Backtrace to the source of the error.
+        backtrace: Backtrace,
+    },
+    /// See [`DsProtError`].
+    #[snafu(transparent)]
+    DsProtError {
+        /// Source error.
+        source: DsProtError,
+    },
+}
+
 /// Options for [`Arm9::with_two_tcms`].
 pub struct Arm9WithTcmsOptions {
     /// Whether the program was compressed originally.
     pub originally_compressed: bool,
     /// Whether the program was encrypted originally.
     pub originally_encrypted: bool,
+    /// Current state of DS Protect. Can be absent, encrypted or unencrypted.
+    pub dsprot_state: DsProtState,
 }
 
 impl<'a> Arm9<'a> {
     /// Creates a new ARM9 program from raw data.
     pub fn new<T: Into<Cow<'a, [u8]>>>(data: T, offsets: Arm9Offsets) -> Result<Self, RawBuildInfoError> {
-        let mut arm9 = Arm9 { data: data.into(), offsets, originally_compressed: false, originally_encrypted: false };
+        let mut arm9 = Arm9 {
+            data: data.into(),
+            offsets,
+            originally_compressed: false,
+            originally_encrypted: false,
+            dsprot_state: DsProtState::None,
+        };
         arm9.originally_compressed = arm9.is_compressed()?;
         arm9.originally_encrypted = arm9.is_encrypted();
         Ok(arm9)
     }
 
+    /// Deprecated, use [`Arm9::with_autoloads`] instead.
+    ///
     /// Creates a new ARM9 program with raw data and two autoloads (ITCM and DTCM).
     ///
     /// # Errors
     ///
     /// See [`Self::build_info_mut`].
+    #[deprecated(note = "use Arm9::with_autoloads instead")]
     pub fn with_two_tcms(
         mut data: Vec<u8>,
         itcm: Autoload,
@@ -202,8 +240,8 @@ impl<'a> Arm9<'a> {
         data.extend(bytemuck::bytes_of(&autoload_infos));
         let autoload_infos_end = data.len() as u32 + offsets.base_address;
 
-        let Arm9WithTcmsOptions { originally_compressed, originally_encrypted } = options;
-        let mut arm9 = Self { data: data.into(), offsets, originally_compressed, originally_encrypted };
+        let Arm9WithTcmsOptions { originally_compressed, originally_encrypted, dsprot_state } = options;
+        let mut arm9 = Self { data: data.into(), offsets, originally_compressed, originally_encrypted, dsprot_state };
 
         let build_info = arm9.build_info_mut()?;
         build_info.autoload_blocks = autoload_blocks;
@@ -236,8 +274,8 @@ impl<'a> Arm9<'a> {
         }
         let autoload_infos_end = data.len() as u32 + offsets.base_address;
 
-        let Arm9WithTcmsOptions { originally_compressed, originally_encrypted } = options;
-        let mut arm9 = Self { data: data.into(), offsets, originally_compressed, originally_encrypted };
+        let Arm9WithTcmsOptions { originally_compressed, originally_encrypted, dsprot_state } = options;
+        let mut arm9 = Self { data: data.into(), offsets, originally_compressed, originally_encrypted, dsprot_state };
 
         let build_info = arm9.build_info_mut()?;
         build_info.autoload_blocks = autoload_blocks;
@@ -250,7 +288,14 @@ impl<'a> Arm9<'a> {
     /// Returns whether the secure area is encrypted. See [`Self::originally_encrypted`] for whether the secure area was
     /// encrypted originally.
     pub fn is_encrypted(&self) -> bool {
-        self.data.len() < 8 || self.data[0..8] != SECURE_AREA_ID
+        if self.data.len() >= 8 && self.data[0..8] == SECURE_AREA_ID {
+            false
+        } else if self.data.len() >= 0x800 {
+            let zero_count = self.data[0..0x800].iter().filter(|&&b| b == 0).count();
+            zero_count < SECURE_AREA_UNENCRYPTED_THRESHOLD
+        } else {
+            true
+        }
     }
 
     /// Decrypts the secure area. Does nothing if already decrypted.
@@ -278,7 +323,7 @@ impl<'a> Arm9<'a> {
         blowfish.decrypt(&mut secure_area[0..0x800])?;
 
         if &secure_area[0..8] != SECURE_AREA_ENCRY_OBJ {
-            NotEncryObjSnafu {}.fail()?;
+            log::warn!("Failed to decrypt secure area");
         }
 
         secure_area[0..8].copy_from_slice(&SECURE_AREA_ID);
@@ -301,10 +346,6 @@ impl<'a> Arm9<'a> {
             DataTooSmallSnafu { expected: 0x4000usize, actual: self.data.len() }.fail()?;
         }
 
-        if self.data[0..8] != SECURE_AREA_ID {
-            NotEncryObjSnafu {}.fail()?;
-        }
-
         let secure_area = self.encrypted_secure_area(key, gamecode);
         self.data.to_mut()[0..0x4000].copy_from_slice(&secure_area);
         Ok(())
@@ -314,7 +355,7 @@ impl<'a> Arm9<'a> {
     pub fn encrypted_secure_area(&self, key: &BlowfishKey, gamecode: u32) -> [u8; 0x4000] {
         let mut secure_area = [0u8; 0x4000];
         secure_area.copy_from_slice(&self.data[0..0x4000]);
-        if self.is_encrypted() {
+        if self.data[0..8] != SECURE_AREA_ID {
             return secure_area;
         }
 
@@ -720,6 +761,69 @@ impl<'a> Arm9<'a> {
         }
 
         Ok(())
+    }
+
+    /// Decrypts all functions in this ARM9 program that were encrypted by DS Protect. Does nothing
+    /// if [`Arm9::dsprot_state`] is [`DsProtState::Unencrypted`].
+    ///
+    /// # Errors
+    ///
+    /// This function will return an error if [`DsProtInfo::decrypt`] fails.
+    pub fn decrypt_dsprot(
+        &mut self,
+        options: &DsProtDecryptOptions,
+    ) -> Result<Option<&DsProtDecryptResult>, Arm9DsProtInfoError> {
+        if self.dsprot_state.is_unencrypted() {
+            // Can't flatten this code due to conditional reference return (known borrow checker limitation)
+            if let DsProtState::Unencrypted(result) = &self.dsprot_state {
+                Ok(Some(result))
+            } else {
+                unreachable!();
+            }
+        } else {
+            let dsprot_info = if self.is_compressed()? {
+                return arm9_ds_prot_info_error::CompressedSnafu.fail();
+            } else if let Some(dsprot_info) = DsProtInfo::detect(&self.data) {
+                dsprot_info
+            } else {
+                // DS Protect is not used
+                return Ok(None);
+            };
+
+            let base_address = self.base_address();
+            let result = dsprot_info.decrypt(self.data.to_mut(), base_address, options)?;
+            self.dsprot_state = DsProtState::Unencrypted(result);
+            let DsProtState::Unencrypted(result) = &self.dsprot_state else { unreachable!() };
+            Ok(Some(result))
+        }
+    }
+
+    /// Encrypts DS Protect functions in this ARM9 program. This can only be done if
+    /// [`Arm9::dsprot_state`] is [`DsProtState::Unencrypted`].
+    ///
+    /// # Errors
+    ///
+    /// This function will return an error if [`DsProtInfo::decrypt`] fails.
+    pub fn encrypt_dsprot(&mut self, options: &DsProtEncryptOptions) -> Result<(), Arm9DsProtInfoError> {
+        let dsprot_state = std::mem::replace(&mut self.dsprot_state, DsProtState::None);
+        let DsProtState::Unencrypted(dsprot_result) = dsprot_state else {
+            return Ok(());
+        };
+
+        let base_address = self.base_address();
+        dsprot_result.encrypt(self.data.to_mut(), base_address, options)?;
+        self.dsprot_state = DsProtState::Encrypted(dsprot_result);
+
+        Ok(())
+    }
+
+    /// Returns the [`DsProtState`] of this ARM9 program.
+    pub fn dsprot_state(&self) -> &DsProtState {
+        &self.dsprot_state
+    }
+
+    pub(crate) fn set_dsprot_state(&mut self, dsprot_state: DsProtState) {
+        self.dsprot_state = dsprot_state;
     }
 }
 

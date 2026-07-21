@@ -7,11 +7,11 @@ use serde::{Deserialize, Serialize};
 use snafu::Snafu;
 
 use super::{
+    BuildContext, Rom,
     raw::{
         self, AccessControl, Capacity, Delay, DsFlags, DsiFlags, DsiFlags2, HeaderVersion, ProgramOffset, RegionFlags,
         TableOffset,
     },
-    BuildContext, Rom,
 };
 use crate::{
     crc::CRC_16_MODBUS,

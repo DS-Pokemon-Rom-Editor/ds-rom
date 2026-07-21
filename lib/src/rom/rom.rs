@@ -9,25 +9,26 @@ use serde::{Deserialize, Serialize};
 use snafu::Snafu;
 
 use super::{
-    raw::{
-        self, Arm9Footer, HmacSha1Signature, RawArm9Error, RawBannerError, RawBuildInfoError, RawFatError, RawFntError,
-        RawHeaderError, RawOverlayError, RomAlignmentsError, TableOffset,
-    },
     Arm7, Arm9, Arm9AutoloadError, Arm9Error, Arm9HmacSha1KeyError, Arm9Offsets, Arm9OverlaySignaturesError, Autoload, Banner,
     BannerError, BannerImageError, BuildInfo, FileBuildError, FileParseError, FileSystem, Header, HeaderBuildError, Logo,
     LogoError, LogoLoadError, LogoSaveError, Overlay, OverlayError, OverlayInfo, OverlayOptions, OverlayTable,
     RomConfigAutoload, RomConfigUnknownAutoload,
+    raw::{
+        self, Arm9Footer, HmacSha1Signature, RawArm9Error, RawBannerError, RawBuildInfoError, RawFatError, RawFntError,
+        RawHeaderError, RawOverlayError, RomAlignmentsError, TableOffset,
+    },
 };
 use crate::{
     compress::lz77::Lz77DecompressError,
     crypto::{
         blowfish::BlowfishKey,
+        dsprot::{DsProtDecryptOptions, DsProtEncryptOptions, DsProtState},
         hmac_sha1::{HmacSha1, HmacSha1FromBytesError},
     },
-    io::{create_dir_all, create_file, create_file_and_dirs, open_file, read_file, read_to_string, FileError},
+    io::{FileError, create_dir_all, create_file, create_file_and_dirs, open_file, read_file, read_to_string},
     rom::{
+        Arm9DsProtInfoError, Arm9WithTcmsOptions, OverlayDsProtError, RomConfig,
         raw::{FileAlloc, MultibootSignature, RawMultibootSignatureError},
-        Arm9WithTcmsOptions, RomConfig,
     },
 };
 
@@ -139,6 +140,24 @@ pub enum RomExtractError {
     RawMultibootSignature {
         /// Source error.
         source: RawMultibootSignatureError,
+    },
+    /// See [`Arm9DsProtInfoError`].
+    #[snafu(transparent)]
+    Arm9DsProtInfo {
+        /// Source error.
+        source: Arm9DsProtInfoError,
+    },
+    /// See [`OverlayDsProtError`].
+    #[snafu(transparent)]
+    OverlayDsProt {
+        /// Source error.
+        source: OverlayDsProtError,
+    },
+    /// See [`Lz77DecompressError`].
+    #[snafu(transparent)]
+    Lz77Decompress {
+        /// Source error.
+        source: Lz77DecompressError,
     },
 }
 
@@ -281,6 +300,18 @@ pub enum RomSaveError {
         /// Backtrace to the source of the error.
         backtrace: Backtrace,
     },
+    /// See [`Arm9DsProtInfoError`].
+    #[snafu(transparent)]
+    Arm9DsProtInfo {
+        /// Source error.
+        source: Arm9DsProtInfoError,
+    },
+    /// See [`OverlayDsProtError`].
+    #[snafu(transparent)]
+    OverlayDsProt {
+        /// Source error.
+        source: OverlayDsProtError,
+    },
 }
 
 /// Config file for the ARM9 main module.
@@ -296,6 +327,9 @@ pub struct Arm9BuildConfig {
     /// Build info for this module.
     #[serde(flatten)]
     pub build_info: BuildInfo,
+    /// Information about DS Protect.
+    #[serde(default, skip_serializing_if = "DsProtState::is_none")]
+    pub dsprot_state: DsProtState,
 }
 
 /// Overlay configuration, extending [`OverlayInfo`] with more fields.
@@ -308,6 +342,9 @@ pub struct OverlayConfig {
     pub signed: bool,
     /// Name of binary file.
     pub file_name: String,
+    /// Stores information about DS Protect functions that were decrypted in this overlay.
+    #[serde(default, skip_serializing_if = "DsProtState::is_none")]
+    pub dsprot: DsProtState,
 }
 
 /// Configuration for the overlay table, used for both ARM9 and ARM7 overlays.
@@ -390,9 +427,14 @@ impl<'a> Rom<'a> {
         let mut arm9 = Arm9::with_autoloads(arm9, &autoloads, arm9_build_config.offsets, Arm9WithTcmsOptions {
             originally_compressed: arm9_build_config.compressed,
             originally_encrypted: arm9_build_config.encrypted,
+            dsprot_state: arm9_build_config.dsprot_state,
         })?;
         arm9_build_config.build_info.assign_to_raw(arm9.build_info_mut()?);
         arm9.update_overlay_signatures(&arm9_overlays)?;
+        if arm9.dsprot_state().is_unencrypted() && options.encrypt {
+            log::info!("Encrypting DS Protect in ARM9 program");
+            arm9.encrypt_dsprot(&DsProtEncryptOptions::default())?;
+        }
         if arm9_build_config.compressed && options.compress {
             log::info!("Compressing ARM9 program");
             arm9.compress()?;
@@ -476,7 +518,17 @@ impl<'a> Rom<'a> {
             let data = read_file(path.join(config.file_name))?;
             let compressed = config.info.compressed;
             config.info.compressed = false;
-            let mut overlay = Overlay::new(data, OverlayOptions { info: config.info, originally_compressed: compressed })?;
+            let mut overlay = Overlay::new(data, OverlayOptions {
+                info: config.info,
+                originally_compressed: compressed,
+                originally_signed: config.signed,
+                dsprot_state: config.dsprot,
+            })?;
+
+            if overlay.dsprot_state().is_unencrypted() && options.encrypt {
+                log::info!("Encrypting DS Protect in {processor} overlay {}", overlay.id());
+                overlay.encrypt_dsprot(&DsProtEncryptOptions::default())?;
+            }
 
             if options.compress {
                 if compressed {
@@ -529,8 +581,6 @@ impl<'a> Rom<'a> {
         self.header_logo.save_png(path.join(&self.config.header_logo))?;
 
         // --------------------- Save ARM9 program ---------------------
-        let arm9_build_config = self.arm9_build_config()?;
-        serde_saphyr::to_io_writer(&mut create_file_and_dirs(path.join(&self.config.arm9_config))?, &arm9_build_config)?;
         let mut plain_arm9 = self.arm9.clone();
         if plain_arm9.is_encrypted() {
             let Some(key) = key else {
@@ -543,7 +593,19 @@ impl<'a> Rom<'a> {
             log::info!("Decompressing ARM9 program");
             plain_arm9.decompress()?;
         }
+        if plain_arm9.dsprot_state().is_encrypted() {
+            log::info!("Decrypting DS Protect in ARM9 program");
+            plain_arm9.decrypt_dsprot(&DsProtDecryptOptions::default())?;
+        }
         create_file_and_dirs(path.join(&self.config.arm9_bin))?.write_all(plain_arm9.code()?)?;
+        let arm9_build_config = Arm9BuildConfig {
+            offsets: *self.arm9.offsets(),
+            encrypted: self.arm9.is_encrypted(),
+            compressed: self.arm9.is_compressed()?,
+            build_info: (*self.arm9.build_info()?).into(),
+            dsprot_state: plain_arm9.dsprot_state().clone(),
+        };
+        serde_saphyr::to_io_writer(&mut create_file_and_dirs(path.join(&self.config.arm9_config))?, &arm9_build_config)?;
 
         // --------------------- Save ARM9 HMAC-SHA1 key ---------------------
         if let Some(arm9_hmac_sha1_key) = plain_arm9.hmac_sha1_key()? {
@@ -628,16 +690,6 @@ impl<'a> Rom<'a> {
         Ok(())
     }
 
-    /// Generates a build config for ARM9, which normally goes into arm9.yaml.
-    pub fn arm9_build_config(&self) -> Result<Arm9BuildConfig, RomSaveError> {
-        Ok(Arm9BuildConfig {
-            offsets: *self.arm9.offsets(),
-            encrypted: self.arm9.is_encrypted(),
-            compressed: self.arm9.is_compressed()?,
-            build_info: (*self.arm9.build_info()?).into(),
-        })
-    }
-
     fn save_overlays(config_path: &Path, overlay_table: &OverlayTable, processor: &str) -> Result<(), RomSaveError> {
         let overlays = overlay_table.overlays();
         if !overlays.is_empty() {
@@ -649,16 +701,22 @@ impl<'a> Rom<'a> {
                 let name = format!("ov{:03}", overlay.id());
 
                 let mut plain_overlay = overlay.clone();
-                configs.push(OverlayConfig {
-                    info: plain_overlay.info().clone(),
-                    file_name: format!("{name}.bin"),
-                    signed: overlay.is_signed(),
-                });
-
                 if plain_overlay.is_compressed() {
                     log::info!("Decompressing {processor} overlay {}/{}", overlay.id(), overlays.len() - 1);
                     plain_overlay.decompress()?;
                 }
+                if plain_overlay.dsprot_state().is_encrypted() {
+                    log::info!("Decrypting DS Protect in {processor} overlay {}", overlay.id());
+                    plain_overlay.decrypt_dsprot(&DsProtDecryptOptions { decode_relocations: false })?;
+                }
+
+                configs.push(OverlayConfig {
+                    info: overlay.info().clone(),
+                    file_name: format!("{name}.bin"),
+                    signed: plain_overlay.is_signed(),
+                    dsprot: plain_overlay.dsprot_state().clone(),
+                });
+
                 create_file(overlays_path.join(format!("{name}.bin")))?.write_all(plain_overlay.code())?;
             }
 
@@ -687,12 +745,12 @@ impl<'a> Rom<'a> {
         let file_root = FileSystem::parse(&fnt, fat, rom)?;
         let path_order = file_root.compute_path_order();
 
-        let arm9 = rom.arm9()?;
+        let mut arm9 = rom.arm9()?;
         let mut decompressed_arm9 = arm9.clone();
         decompressed_arm9.decompress()?;
 
         let arm9_overlays = rom.arm9_overlay_table_with(&decompressed_arm9)?;
-        let arm9_overlays = OverlayTable::parse_arm9(arm9_overlays, rom, &decompressed_arm9)?;
+        let mut arm9_overlays = OverlayTable::parse_arm9(arm9_overlays, rom, &decompressed_arm9)?;
         let arm7_overlays = rom.arm7_overlay_table()?;
         let arm7_overlays = OverlayTable::parse_arm7(arm7_overlays, rom)?;
 
@@ -715,13 +773,24 @@ impl<'a> Rom<'a> {
 
         let has_arm9_hmac_sha1 = decompressed_arm9.hmac_sha1_key()?.is_some();
 
-        let multiboot_signature = rom.multiboot_signature()?.cloned();
+        let multiboot_signature = rom.multiboot_signature()?;
 
         let alignment = rom.alignments()?;
+        let padding = rom.padding_values()?;
+
+        let dsprot_options = DsProtDecryptOptions::default();
+        if let Some(result) = decompressed_arm9.decrypt_dsprot(&dsprot_options)? {
+            arm9.set_dsprot_state(DsProtState::Encrypted(result.clone()));
+        }
+        for overlay in arm9_overlays.overlays_mut() {
+            let mut decompressed_overlay = overlay.clone();
+            decompressed_overlay.decompress()?;
+            if let Some(result) = decompressed_overlay.decrypt_dsprot(&dsprot_options)? {
+                overlay.set_dsprot_state(DsProtState::Encrypted(result.clone()));
+            }
+        }
 
         let config = RomConfig {
-            file_image_padding_value: rom.file_image_padding_value()?,
-            section_padding_value: rom.section_padding_value()?,
             header: "header.yaml".into(),
             header_logo: "header_logo.png".into(),
             arm9_bin: "arm9/arm9.bin".into(),
@@ -731,14 +800,27 @@ impl<'a> Rom<'a> {
             itcm: RomConfigAutoload { bin: "arm9/itcm.bin".into(), config: "arm9/itcm.yaml".into() },
             unknown_autoloads,
             dtcm: RomConfigAutoload { bin: "arm9/dtcm.bin".into(), config: "arm9/dtcm.yaml".into() },
-            arm9_overlays: if arm9_overlays.is_empty() { None } else { Some("arm9_overlays/overlays.yaml".into()) },
-            arm7_overlays: if arm7_overlays.is_empty() { None } else { Some("arm7_overlays/overlays.yaml".into()) },
+            arm9_overlays: if arm9_overlays.is_empty() {
+                None
+            } else {
+                Some("arm9_overlays/overlays.yaml".into())
+            },
+            arm7_overlays: if arm7_overlays.is_empty() {
+                None
+            } else {
+                Some("arm7_overlays/overlays.yaml".into())
+            },
             banner: "banner/banner.yaml".into(),
             files_dir: "files/".into(),
             path_order: "path_order.txt".into(),
-            multiboot_signature: if multiboot_signature.is_none() { None } else { Some("multiboot_signature.yaml".into()) },
+            multiboot_signature: if multiboot_signature.is_none() {
+                None
+            } else {
+                Some("multiboot_signature.yaml".into())
+            },
             arm9_hmac_sha1_key: has_arm9_hmac_sha1.then_some("arm9/hmac_sha1_key.bin".into()),
             alignment,
+            padding,
         };
 
         Ok(Self {
@@ -771,7 +853,7 @@ impl<'a> Rom<'a> {
         cursor.write_all(&[0u8; size_of::<raw::Header>()])?;
 
         // --------------------- Write ARM9 program ---------------------
-        self.align_section(&mut cursor, self.config.alignment.arm9)?;
+        self.align(&mut cursor, self.config.alignment.arm9, self.config.padding.arm9)?;
         context.arm9_offset = Some(cursor.position() as u32);
         context.arm9_autoload_callback = Some(self.arm9.autoload_callback());
         context.arm9_build_info_offset = Some(self.arm9.build_info_offset());
@@ -784,7 +866,7 @@ impl<'a> Rom<'a> {
 
         if !self.arm9_overlay_table.is_empty() {
             // --------------------- Write ARM9 overlay table ---------------------
-            self.align_section(&mut cursor, self.config.alignment.arm9_overlay_table)?;
+            self.align(&mut cursor, self.config.alignment.arm9_overlay_table, self.config.padding.arm9_overlay_table)?;
             context.arm9_ovt_offset = Some(TableOffset {
                 offset: cursor.position() as u32,
                 size: (self.arm9_overlay_table.len() * size_of::<raw::Overlay>()) as u32,
@@ -794,7 +876,7 @@ impl<'a> Rom<'a> {
 
             // --------------------- Write ARM9 overlays ---------------------
             for overlay in self.arm9_overlay_table.overlays() {
-                self.align_section(&mut cursor, self.config.alignment.arm9_overlay)?;
+                self.align(&mut cursor, self.config.alignment.arm9_overlay, self.config.padding.arm9_overlays)?;
                 let start = cursor.position() as u32;
                 let end = start + overlay.full_data().len() as u32;
                 file_allocs[overlay.file_id() as usize] = FileAlloc { start, end };
@@ -804,7 +886,7 @@ impl<'a> Rom<'a> {
         }
 
         // --------------------- Write ARM7 program ---------------------
-        self.align_section(&mut cursor, self.config.alignment.arm7)?;
+        self.align(&mut cursor, self.config.alignment.arm7, self.config.padding.arm7)?;
         context.arm7_offset = Some(cursor.position() as u32);
         context.arm7_autoload_callback = Some(self.arm7.autoload_callback());
         context.arm7_build_info_offset = None;
@@ -812,7 +894,7 @@ impl<'a> Rom<'a> {
 
         if !self.arm7_overlay_table.is_empty() {
             // --------------------- Write ARM7 overlay table ---------------------
-            self.align_section(&mut cursor, self.config.alignment.arm7_overlay_table)?;
+            self.align(&mut cursor, self.config.alignment.arm7_overlay_table, self.config.padding.arm7_overlay_table)?;
             context.arm7_ovt_offset = Some(TableOffset {
                 offset: cursor.position() as u32,
                 size: (self.arm7_overlay_table.len() * size_of::<raw::Overlay>()) as u32,
@@ -822,7 +904,7 @@ impl<'a> Rom<'a> {
 
             // --------------------- Write ARM7 overlays ---------------------
             for overlay in self.arm7_overlay_table.overlays() {
-                self.align_section(&mut cursor, self.config.alignment.arm7_overlay)?;
+                self.align(&mut cursor, self.config.alignment.arm7_overlay, self.config.padding.arm7_overlays)?;
                 let start = cursor.position() as u32;
                 let end = start + overlay.full_data().len() as u32;
                 file_allocs[overlay.file_id() as usize] = FileAlloc { start, end };
@@ -832,30 +914,31 @@ impl<'a> Rom<'a> {
         }
 
         // --------------------- Write file name table (FNT) ---------------------
-        self.align_section(&mut cursor, self.config.alignment.file_name_table)?;
+        self.align(&mut cursor, self.config.alignment.file_name_table, self.config.padding.fnt)?;
         self.files.sort_for_fnt();
         let fnt = self.files.build_fnt()?.build()?;
         context.fnt_offset = Some(TableOffset { offset: cursor.position() as u32, size: fnt.len() as u32 });
         cursor.write_all(&fnt)?;
 
         // --------------------- Write file allocation table (FAT) placeholder ---------------------
-        self.align_section(&mut cursor, self.config.alignment.file_allocation_table)?;
+        self.align(&mut cursor, self.config.alignment.file_allocation_table, self.config.padding.fat)?;
         context.fat_offset =
             Some(TableOffset { offset: cursor.position() as u32, size: (file_allocs.len() * size_of::<FileAlloc>()) as u32 });
         cursor.write_all(bytemuck::cast_slice(&file_allocs))?;
 
         // --------------------- Write banner ---------------------
-        self.align_section(&mut cursor, self.config.alignment.banner)?;
+        self.align(&mut cursor, self.config.alignment.banner, self.config.padding.banner)?;
         let banner = self.banner.build()?;
         context.banner_offset = Some(TableOffset { offset: cursor.position() as u32, size: banner.full_data().len() as u32 });
         cursor.write_all(banner.full_data())?;
 
         // --------------------- Write files ---------------------
-        self.align_file_image(&mut cursor, self.config.alignment.file_image_block)?;
+        self.align(&mut cursor, self.config.alignment.file_image_block, self.config.padding.file_image)?;
         self.files.sort_for_rom();
         self.files.traverse_files(self.path_order.iter().map(|s| s.as_str()), |file, _| {
             // TODO: Rewrite traverse_files as an iterator so these errors can be returned
-            self.align_file_image(&mut cursor, self.config.alignment.file).expect("failed to align after file");
+            self.align(&mut cursor, self.config.alignment.file, self.config.padding.file_image)
+                .expect("failed to align after file");
 
             let contents = file.contents();
             let start = cursor.position() as u32;
@@ -874,7 +957,7 @@ impl<'a> Rom<'a> {
 
         // --------------------- Write padding ---------------------
         let padded_rom_size = cursor.position().next_power_of_two().max(128 * 1024) as u32;
-        self.align_file_image(&mut cursor, padded_rom_size)?;
+        self.align(&mut cursor, padded_rom_size, self.config.padding.rom)?;
 
         // --------------------- Update FAT ---------------------
         cursor.set_position(context.fat_offset.unwrap().offset as u64);
@@ -896,14 +979,6 @@ impl<'a> Rom<'a> {
             cursor.write_all(&[padding_value])?;
         }
         Ok(())
-    }
-
-    fn align_section(&self, cursor: &mut Cursor<Vec<u8>>, alignment: u32) -> Result<(), RomBuildError> {
-        self.align(cursor, alignment, self.config.section_padding_value)
-    }
-
-    fn align_file_image(&self, cursor: &mut Cursor<Vec<u8>>, alignment: u32) -> Result<(), RomBuildError> {
-        self.align(cursor, alignment, self.config.file_image_padding_value)
     }
 
     /// Returns a reference to the header logo of this [`Rom`].
@@ -1036,7 +1111,8 @@ pub struct RomLoadOptions<'a> {
     pub key: Option<&'a BlowfishKey>,
     /// If true (default), compress ARM9 and overlays if they are configured with `compressed: true`.
     pub compress: bool,
-    /// If true (default), encrypt ARM9 if it's configured with `encrypted: true`.
+    /// If true (default), encrypt ARM9 if it's configured with `encrypted: true`, and ARM9/overlays
+    /// if they contain DS Protect.
     pub encrypt: bool,
     /// If true (default), load asset files.
     pub load_files: bool,

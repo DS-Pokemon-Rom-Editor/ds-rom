@@ -1,6 +1,6 @@
 use super::{
-    raw::{self, HmacSha1Signature},
     Arm9, Overlay, OverlayError,
+    raw::{self, HmacSha1Signature},
 };
 use crate::crypto::hmac_sha1::HmacSha1;
 

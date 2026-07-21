@@ -302,11 +302,7 @@ impl Logo {
     }
 
     fn get_pixel_value(&self, x: usize, y: usize, value: u8) -> u8 {
-        if self.get_pixel(x, y) {
-            value
-        } else {
-            0
-        }
+        if self.get_pixel(x, y) { value } else { 0 }
     }
 
     fn get_braille_index(&self, x: usize, y: usize) -> u8 {
