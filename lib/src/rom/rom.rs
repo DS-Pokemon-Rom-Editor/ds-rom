@@ -581,8 +581,6 @@ impl<'a> Rom<'a> {
         self.header_logo.save_png(path.join(&self.config.header_logo))?;
 
         // --------------------- Save ARM9 program ---------------------
-        let arm9_build_config = self.arm9_build_config()?;
-        serde_saphyr::to_io_writer(&mut create_file_and_dirs(path.join(&self.config.arm9_config))?, &arm9_build_config)?;
         let mut plain_arm9 = self.arm9.clone();
         if plain_arm9.is_encrypted() {
             let Some(key) = key else {
@@ -600,6 +598,14 @@ impl<'a> Rom<'a> {
             plain_arm9.decrypt_dsprot(&DsProtDecryptOptions::default())?;
         }
         create_file_and_dirs(path.join(&self.config.arm9_bin))?.write_all(plain_arm9.code()?)?;
+        let arm9_build_config = Arm9BuildConfig {
+            offsets: *self.arm9.offsets(),
+            encrypted: self.arm9.is_encrypted(),
+            compressed: self.arm9.is_compressed()?,
+            build_info: (*self.arm9.build_info()?).into(),
+            dsprot_state: plain_arm9.dsprot_state().clone(),
+        };
+        serde_saphyr::to_io_writer(&mut create_file_and_dirs(path.join(&self.config.arm9_config))?, &arm9_build_config)?;
 
         // --------------------- Save ARM9 HMAC-SHA1 key ---------------------
         if let Some(arm9_hmac_sha1_key) = plain_arm9.hmac_sha1_key()? {
@@ -682,17 +688,6 @@ impl<'a> Rom<'a> {
         }
 
         Ok(())
-    }
-
-    /// Generates a build config for ARM9, which normally goes into arm9.yaml.
-    pub fn arm9_build_config(&self) -> Result<Arm9BuildConfig, RomSaveError> {
-        Ok(Arm9BuildConfig {
-            offsets: *self.arm9.offsets(),
-            encrypted: self.arm9.is_encrypted(),
-            compressed: self.arm9.is_compressed()?,
-            build_info: (*self.arm9.build_info()?).into(),
-            dsprot_state: self.arm9.dsprot_state().clone(),
-        })
     }
 
     fn save_overlays(config_path: &Path, overlay_table: &OverlayTable, processor: &str) -> Result<(), RomSaveError> {
