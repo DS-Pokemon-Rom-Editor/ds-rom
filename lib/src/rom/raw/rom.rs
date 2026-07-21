@@ -7,10 +7,10 @@ use super::{
     RawFatError, RawFntError, RawHeaderError, RawOverlayError,
 };
 use crate::{
-    io::{open_file, write_file, FileError},
+    io::{FileError, open_file, write_file},
     rom::{
+        Arm7, Arm7Offsets, Arm9, Arm9Offsets, RomConfigAlignment, RomConfigPaddingValues,
         raw::{MultibootSignature, RawMultibootSignatureError},
-        Arm7, Arm7Offsets, Arm9, Arm9Offsets, RomConfigAlignment,
     },
 };
 
@@ -323,12 +323,62 @@ impl<'a> Rom<'a> {
         }
     }
 
+    /// Returns the padding values between ROM sections.
+    ///
+    /// # Errors
+    ///
+    /// See [`Self::header`], [`Self::fat`], [`Self::arm9_overlays`], [`Self::arm7_overlays`] and
+    /// [`Self::file_image_padding_value`].
+    pub fn padding_values(&self) -> Result<RomConfigPaddingValues, RomAlignmentsError> {
+        let header = self.header()?;
+        let fat = self.fat()?;
+        let arm9_overlays = self.arm9_overlays()?;
+        let arm7_overlays = self.arm7_overlays()?;
+
+        Ok(RomConfigPaddingValues {
+            arm9: self.data[header.arm9.offset as usize - 1],
+            arm9_overlay_table: if header.arm9_overlays.offset > 0 {
+                self.data[header.arm9_overlays.offset as usize - 1]
+            } else {
+                DEFAULT_PADDING_VALUE
+            },
+            arm9_overlays: self.get_overlays_padding(arm9_overlays, fat).unwrap_or(DEFAULT_PADDING_VALUE),
+            arm7: self.data[header.arm7.offset as usize - 1],
+            arm7_overlay_table: if header.arm7_overlays.offset > 0 {
+                self.data[header.arm7_overlays.offset as usize - 1]
+            } else {
+                DEFAULT_PADDING_VALUE
+            },
+            arm7_overlays: self.get_overlays_padding(arm7_overlays, fat).unwrap_or(DEFAULT_PADDING_VALUE),
+            fnt: self.data[header.file_names.offset as usize - 1],
+            fat: self.data[header.file_allocs.offset as usize - 1],
+            banner: self.data[header.banner_offset as usize - 1],
+            file_image: self.file_image_padding_value()?,
+            rom: *self.data.last().unwrap_or(&DEFAULT_PADDING_VALUE),
+        })
+    }
+
+    fn get_overlays_padding(&self, overlays: &[Overlay], fat: &[FileAlloc]) -> Option<u8> {
+        let mut overlay_files = overlays.iter().map(|o| &fat[o.id as usize]).collect::<Vec<_>>();
+        overlay_files.sort_unstable_by_key(|o| o.start);
+        let mut overlay_files = overlay_files.into_iter();
+        if let Some(mut prev_overlay) = overlay_files.next() {
+            for overlay in overlay_files {
+                if prev_overlay.end != overlay.start {
+                    return Some(self.data[overlay.start as usize - 1]);
+                }
+                prev_overlay = overlay;
+            }
+        }
+        None
+    }
+
     /// Returns the padding value in the file image block of this [`Rom`].
     ///
     /// # Errors
     ///
     /// See [`Self::fat`], [`Self::arm9_overlays`] and [`Self::arm7_overlays`].
-    pub fn file_image_padding_value(&self) -> Result<u8, RomAlignmentsError> {
+    fn file_image_padding_value(&self) -> Result<u8, RomAlignmentsError> {
         let fat = self.fat()?;
         let arm9_overlays = self.arm9_overlays()?;
         let arm7_overlays = self.arm7_overlays()?;
@@ -346,49 +396,8 @@ impl<'a> Rom<'a> {
 
         // Find a gap between two adjacent files, and return the padding byte between them
         let Some(gap) = files.windows(2).find(|pair| pair[0].end != pair[1].start) else {
-            return Ok(0xff);
+            return Ok(DEFAULT_PADDING_VALUE);
         };
-        Ok(self.data[gap[0].end as usize])
-    }
-
-    /// Returns the section padding value of this [`Rom`].
-    ///
-    /// # Errors
-    ///
-    /// See [`Self::header`], [`Self::banner`], [`Self::fat`], [`Self::arm9_overlays`] and [`Self::arm7_overlays`].
-    pub fn section_padding_value(&self) -> Result<u8, RomAlignmentsError> {
-        let header = self.header()?;
-        let banner = self.banner()?;
-        let fat = self.fat()?;
-        let arm9_overlays = self.arm9_overlays()?;
-        let arm7_overlays = self.arm7_overlays()?;
-
-        // Get sorted list of adjacent sections in the ROM
-        let mut sections = vec![
-            header.arm9.offset..header.arm9.offset + header.arm9.size + size_of::<Arm9Footer>() as u32,
-            header.arm7.offset..header.arm7.offset + header.arm7.size,
-            header.file_names.offset..header.file_names.offset + header.file_names.size,
-            header.file_allocs.offset..header.file_allocs.offset + header.file_allocs.size,
-            header.arm9_overlays.offset..header.arm9_overlays.offset + header.arm9_overlays.size,
-            header.arm7_overlays.offset..header.arm7_overlays.offset + header.arm7_overlays.size,
-        ];
-        sections.push(header.banner_offset..header.banner_offset + banner.version().banner_size() as u32);
-        arm9_overlays.iter().for_each(|overlay| {
-            let file = &fat[overlay.file_id as usize];
-            sections.push(file.start..file.end);
-        });
-        arm7_overlays.iter().for_each(|overlay| {
-            let file = &fat[overlay.file_id as usize];
-            sections.push(file.start..file.end);
-        });
-        sections.retain(|section| section.start != section.end);
-        sections.sort_by_key(|section| section.start);
-
-        // Find a gap between two adjacent sections, and return the padding byte between them
-        let Some(gap) = sections.windows(2).find(|pair| pair[0].end != pair[1].start) else {
-            return Ok(0xff);
-        };
-        log::debug!("Gap between sections: {:#010x} - {:#010x}", gap[0].end, gap[1].start);
         Ok(self.data[gap[0].end as usize])
     }
 
@@ -421,11 +430,7 @@ impl<'a> Rom<'a> {
 
         // Get the alignment of the current section, by looking at the address of the next section.
         fn get_alignment(next_section: u32) -> u32 {
-            if next_section.trailing_zeros() >= 9 {
-                0x200
-            } else {
-                DEFAULT_ALIGNMENT
-            }
+            if next_section.trailing_zeros() >= 9 { 0x200 } else { DEFAULT_ALIGNMENT }
         }
 
         let fat = self.fat()?;
@@ -477,3 +482,5 @@ impl<'a> Rom<'a> {
         })
     }
 }
+
+const DEFAULT_PADDING_VALUE: u8 = 0xff;

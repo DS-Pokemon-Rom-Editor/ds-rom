@@ -781,6 +781,7 @@ impl<'a> Rom<'a> {
         let multiboot_signature = rom.multiboot_signature()?;
 
         let alignment = rom.alignments()?;
+        let padding = rom.padding_values()?;
 
         let dsprot_options = DsProtDecryptOptions::default();
         if let Some(result) = decompressed_arm9.decrypt_dsprot(&dsprot_options)? {
@@ -795,8 +796,6 @@ impl<'a> Rom<'a> {
         }
 
         let config = RomConfig {
-            file_image_padding_value: rom.file_image_padding_value()?,
-            section_padding_value: rom.section_padding_value()?,
             header: "header.yaml".into(),
             header_logo: "header_logo.png".into(),
             arm9_bin: "arm9/arm9.bin".into(),
@@ -814,6 +813,7 @@ impl<'a> Rom<'a> {
             multiboot_signature: if multiboot_signature.is_none() { None } else { Some("multiboot_signature.yaml".into()) },
             arm9_hmac_sha1_key: has_arm9_hmac_sha1.then_some("arm9/hmac_sha1_key.bin".into()),
             alignment,
+            padding,
         };
 
         Ok(Self {
@@ -846,7 +846,7 @@ impl<'a> Rom<'a> {
         cursor.write_all(&[0u8; size_of::<raw::Header>()])?;
 
         // --------------------- Write ARM9 program ---------------------
-        self.align_section(&mut cursor, self.config.alignment.arm9)?;
+        self.align(&mut cursor, self.config.alignment.arm9, self.config.padding.arm9)?;
         context.arm9_offset = Some(cursor.position() as u32);
         context.arm9_autoload_callback = Some(self.arm9.autoload_callback());
         context.arm9_build_info_offset = Some(self.arm9.build_info_offset());
@@ -859,7 +859,7 @@ impl<'a> Rom<'a> {
 
         if !self.arm9_overlay_table.is_empty() {
             // --------------------- Write ARM9 overlay table ---------------------
-            self.align_section(&mut cursor, self.config.alignment.arm9_overlay_table)?;
+            self.align(&mut cursor, self.config.alignment.arm9_overlay_table, self.config.padding.arm9_overlay_table)?;
             context.arm9_ovt_offset = Some(TableOffset {
                 offset: cursor.position() as u32,
                 size: (self.arm9_overlay_table.len() * size_of::<raw::Overlay>()) as u32,
@@ -869,7 +869,7 @@ impl<'a> Rom<'a> {
 
             // --------------------- Write ARM9 overlays ---------------------
             for overlay in self.arm9_overlay_table.overlays() {
-                self.align_section(&mut cursor, self.config.alignment.arm9_overlay)?;
+                self.align(&mut cursor, self.config.alignment.arm9_overlay, self.config.padding.arm9_overlays)?;
                 let start = cursor.position() as u32;
                 let end = start + overlay.full_data().len() as u32;
                 file_allocs[overlay.file_id() as usize] = FileAlloc { start, end };
@@ -879,7 +879,7 @@ impl<'a> Rom<'a> {
         }
 
         // --------------------- Write ARM7 program ---------------------
-        self.align_section(&mut cursor, self.config.alignment.arm7)?;
+        self.align(&mut cursor, self.config.alignment.arm7, self.config.padding.arm7)?;
         context.arm7_offset = Some(cursor.position() as u32);
         context.arm7_autoload_callback = Some(self.arm7.autoload_callback());
         context.arm7_build_info_offset = None;
@@ -887,7 +887,7 @@ impl<'a> Rom<'a> {
 
         if !self.arm7_overlay_table.is_empty() {
             // --------------------- Write ARM7 overlay table ---------------------
-            self.align_section(&mut cursor, self.config.alignment.arm7_overlay_table)?;
+            self.align(&mut cursor, self.config.alignment.arm7_overlay_table, self.config.padding.arm7_overlay_table)?;
             context.arm7_ovt_offset = Some(TableOffset {
                 offset: cursor.position() as u32,
                 size: (self.arm7_overlay_table.len() * size_of::<raw::Overlay>()) as u32,
@@ -897,7 +897,7 @@ impl<'a> Rom<'a> {
 
             // --------------------- Write ARM7 overlays ---------------------
             for overlay in self.arm7_overlay_table.overlays() {
-                self.align_section(&mut cursor, self.config.alignment.arm7_overlay)?;
+                self.align(&mut cursor, self.config.alignment.arm7_overlay, self.config.padding.arm7_overlays)?;
                 let start = cursor.position() as u32;
                 let end = start + overlay.full_data().len() as u32;
                 file_allocs[overlay.file_id() as usize] = FileAlloc { start, end };
@@ -907,30 +907,31 @@ impl<'a> Rom<'a> {
         }
 
         // --------------------- Write file name table (FNT) ---------------------
-        self.align_section(&mut cursor, self.config.alignment.file_name_table)?;
+        self.align(&mut cursor, self.config.alignment.file_name_table, self.config.padding.fnt)?;
         self.files.sort_for_fnt();
         let fnt = self.files.build_fnt()?.build()?;
         context.fnt_offset = Some(TableOffset { offset: cursor.position() as u32, size: fnt.len() as u32 });
         cursor.write_all(&fnt)?;
 
         // --------------------- Write file allocation table (FAT) placeholder ---------------------
-        self.align_section(&mut cursor, self.config.alignment.file_allocation_table)?;
+        self.align(&mut cursor, self.config.alignment.file_allocation_table, self.config.padding.fat)?;
         context.fat_offset =
             Some(TableOffset { offset: cursor.position() as u32, size: (file_allocs.len() * size_of::<FileAlloc>()) as u32 });
         cursor.write_all(bytemuck::cast_slice(&file_allocs))?;
 
         // --------------------- Write banner ---------------------
-        self.align_section(&mut cursor, self.config.alignment.banner)?;
+        self.align(&mut cursor, self.config.alignment.banner, self.config.padding.banner)?;
         let banner = self.banner.build()?;
         context.banner_offset = Some(TableOffset { offset: cursor.position() as u32, size: banner.full_data().len() as u32 });
         cursor.write_all(banner.full_data())?;
 
         // --------------------- Write files ---------------------
-        self.align_file_image(&mut cursor, self.config.alignment.file_image_block)?;
+        self.align(&mut cursor, self.config.alignment.file_image_block, self.config.padding.file_image)?;
         self.files.sort_for_rom();
         self.files.traverse_files(self.path_order.iter().map(|s| s.as_str()), |file, _| {
             // TODO: Rewrite traverse_files as an iterator so these errors can be returned
-            self.align_file_image(&mut cursor, self.config.alignment.file).expect("failed to align after file");
+            self.align(&mut cursor, self.config.alignment.file, self.config.padding.file_image)
+                .expect("failed to align after file");
 
             let contents = file.contents();
             let start = cursor.position() as u32;
@@ -949,7 +950,7 @@ impl<'a> Rom<'a> {
 
         // --------------------- Write padding ---------------------
         let padded_rom_size = cursor.position().next_power_of_two().max(128 * 1024) as u32;
-        self.align_file_image(&mut cursor, padded_rom_size)?;
+        self.align(&mut cursor, padded_rom_size, self.config.padding.rom)?;
 
         // --------------------- Update FAT ---------------------
         cursor.set_position(context.fat_offset.unwrap().offset as u64);
@@ -971,14 +972,6 @@ impl<'a> Rom<'a> {
             cursor.write_all(&[padding_value])?;
         }
         Ok(())
-    }
-
-    fn align_section(&self, cursor: &mut Cursor<Vec<u8>>, alignment: u32) -> Result<(), RomBuildError> {
-        self.align(cursor, alignment, self.config.section_padding_value)
-    }
-
-    fn align_file_image(&self, cursor: &mut Cursor<Vec<u8>>, alignment: u32) -> Result<(), RomBuildError> {
-        self.align(cursor, alignment, self.config.file_image_padding_value)
     }
 
     /// Returns a reference to the header logo of this [`Rom`].

@@ -5,11 +5,6 @@ use serde::{Deserialize, Serialize};
 /// Config file mainly consisting of paths to extracted files.
 #[derive(Serialize, Deserialize, Clone)]
 pub struct RomConfig {
-    /// Byte value to append between files in the file image block.
-    pub file_image_padding_value: u8,
-    /// Byte value to append between sections in the file image block.
-    pub section_padding_value: u8,
-
     /// Path to header YAML, deserializes into [`Header`](crate::rom::Header).
     pub header: PathBuf,
     /// Path to header logo PNG, loaded by [`Logo::from_png`](crate::rom::Logo::from_png).
@@ -54,6 +49,9 @@ pub struct RomConfig {
 
     /// Alignment of ROM sections
     pub alignment: RomConfigAlignment,
+
+    /// Padding values for aligning ROM sections
+    pub padding: RomConfigPaddingValues,
 }
 
 /// Path to autoload files
@@ -100,4 +98,31 @@ pub struct RomConfigAlignment {
     pub file_image_block: u32,
     /// Alignment of each file.
     pub file: u32,
+}
+
+/// Byte values to append when aligning ROM sections.
+#[derive(Serialize, Deserialize, Clone)]
+pub struct RomConfigPaddingValues {
+    /// Before the ARM9 program.
+    pub arm9: u8,
+    /// Before the ARM9 overlay table.
+    pub arm9_overlay_table: u8,
+    /// Before ARM9 overlays.
+    pub arm9_overlays: u8,
+    /// Before ARM7 program.
+    pub arm7: u8,
+    /// Before the ARM7 overlay table.
+    pub arm7_overlay_table: u8,
+    /// Before ARM7 overlays.
+    pub arm7_overlays: u8,
+    /// Before the file name table.
+    pub fnt: u8,
+    /// Before the file allocation table.
+    pub fat: u8,
+    /// Before the banner section.
+    pub banner: u8,
+    /// Before files in the file image block.
+    pub file_image: u8,
+    /// Aligning the ROM size to a power of two.
+    pub rom: u8,
 }
