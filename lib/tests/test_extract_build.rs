@@ -1,7 +1,7 @@
 use std::fs;
 
 use anyhow::Result;
-use ds_rom::rom::{Rom, raw};
+use ds_rom::rom::{Rom, RomLoadOptions, raw};
 use log::LevelFilter;
 
 use crate::common::RomsTest;
@@ -32,7 +32,7 @@ fn test_extract_build() -> Result<()> {
         let build_path = path.with_file_name(format!("build_{file_name}"));
         let config_path = extract_path.join("config.yaml");
 
-        let rom = Rom::load(&config_path, Default::default())?;
+        let rom = Rom::load(&config_path, RomLoadOptions { key: Some(&test.key), ..Default::default() })?;
         let raw_rom = rom.build(Some(&test.key))?;
         raw_rom.save(&build_path)?;
 
